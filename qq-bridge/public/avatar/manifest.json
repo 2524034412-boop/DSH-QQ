@@ -1,0 +1,18 @@
+{
+  "canvas": {
+    "w": 1400,
+    "h": 839
+  },
+  "parts": [
+    {
+      "id": "base",
+      "file": "base.webp",
+      "group": "body",
+      "depth": 0,
+      "pivot": [
+        0.5,
+        0.5
+      ]
+    }
+  ]
+}
