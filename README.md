@@ -1,4 +1,6 @@
-# DSH-QQ · 把 QQ 接进 DeepSeek Harness
+# dsh-qq-bridge · 把 QQ 接进 DeepSeek Harness
+
+> 仓库叫 **DSH-QQ**，插件包名 **`dsh-qq-bridge`**，桥接本体叫 **qq-bridge**。
 
 一句话：**让你的 DSH 住进 QQ 群和私聊。** 有人格、有跨会话记忆、会学群里的黑话、会发表情包、会发语音，还会自己判断什么时候该说话、什么时候该潜水。
 
