@@ -60,10 +60,13 @@ DSH → 设置 → QQ 桥接，五个标签，切走再回来输入不丢：
 
 **你需要自备：** DSH（DeepSeek Harness）、SnowLuma（QQ 网关，第三方）、一个 QQ 号。
 
-1. 到 [Releases](https://github.com/2524034412-boop/DSH-QQ/releases) 下载 `qq-bridge-installer-2.1-public.zip`
+> **SnowLuma 怎么装？** 它不在本包里（第三方项目，有自己的许可）。下载、扫码、OneBot 端口、常见问题都写在
+> **[docs/SNOWLUMA.md](docs/SNOWLUMA.md)**。装完回到 DSH 点「重新检测」就行。
+
+1. 到 [Releases](https://github.com/2524034412-boop/DSH-QQ/releases) 下载 `qq-bridge-installer-2.2-public.zip`
 2. 解压到任意位置，双击 **安装.cmd**
 3. 打开 DSH → 设置 → QQ 桥接，按「新手引导」走：
-   - 装 SnowLuma → 手机 QQ 扫码登录
+   - 装 SnowLuma → 手机 QQ 扫码登录（看 [docs/SNOWLUMA.md](docs/SNOWLUMA.md)）
    - 在 SnowLuma 里点一次「注入」
    - 填管理员 QQ
    - 加一个群或自己的私聊
