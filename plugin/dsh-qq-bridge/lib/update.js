@@ -6,7 +6,7 @@
  *       qq-bridge-v0.3.1
  *   - release 里必须挂一个资产：
  *       dsh-qq-bridge-0.3.1.zip
- *     它的根目录就是插件根：package.json、lib/、docs/、cordis.patch.yml、README.md
+ *     它的根目录就是插件根：package.json、lib/、docs/、locale/、cordis.patch.yml、README.md
  *   - 更新说明写在 release 正文里，会原样显示在设置页。
  *
  * 只替换**设置页插件**（这个包）。桥接本体（D:\DSH\qq-bridge）体积大、还带着用户数据，
@@ -15,7 +15,7 @@
  * 安全线：
  *   - 解压出来的路径必须在临时目录里面（防 zip-slip）
  *   - 覆盖之前先把当前插件整份备份到插件目录旁边的 .backup/ 下
- *   - 只覆盖 package.json / cordis.patch.yml / README.md / lib / docs，不删别的
+ *   - 只覆盖 package.json / cordis.patch.yml / README.md / lib / docs / locale，不删别的
  */
 
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -30,7 +30,7 @@ import { spawnSync } from 'node:child_process'
 const CONFIG_FILE_NAME = 'dsh-qq-bridge-update.json'
 
 /** 认识的文件/目录名（多一个都不覆盖）。 */
-const COPY_ENTRIES = ['package.json', 'cordis.patch.yml', 'README.md', 'lib', 'docs']
+const COPY_ENTRIES = ['package.json', 'cordis.patch.yml', 'README.md', 'lib', 'docs', 'locale']
 const ASSET_PATTERN = /^dsh-qq-bridge-.*\.zip$/i
 const TAG_PATTERN = /^qq-bridge-v?/i
 const MAX_ASSET_BYTES = 30 * 1024 * 1024
