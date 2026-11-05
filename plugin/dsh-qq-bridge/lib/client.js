@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
 
     const BASE = '/dsh-qq-bridge'
     const STATUS_MS = 10000
-    const PLUGIN_VERSION = '0.4.3'
+    const PLUGIN_VERSION = '0.4.4'
     // SnowLuma 是第三方项目，不随包分发：给一份我们写的安装说明。
     const SNOWLUMA_GUIDE = 'https://github.com/2524034412-boop/DSH-QQ/blob/main/docs/SNOWLUMA.md'
 
