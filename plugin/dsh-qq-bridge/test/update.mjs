@@ -40,6 +40,9 @@ function writePlugin(dir, version, body) {
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'dsh-qq-bridge', version, type: 'module' }, null, 2))
   writeFileSync(join(dir, 'lib', 'index.js'), body)
   writeFileSync(join(dir, 'cordis.patch.yml'), '- insert: []\n')
+  // locale 是 0.4.2 起才有的目录：更新器漏了它，DSH 插件列表就会退回包名。
+  mkdirSync(join(dir, 'locale'), { recursive: true })
+  writeFileSync(join(dir, 'locale', 'zh.json'), JSON.stringify({ meta: { title: '灵犀 ' + version } }, null, 2))
 }
 
 function makeZip(from, to) {
@@ -152,6 +155,10 @@ check('返回了来源和目标版本', applied.body.from === REAL_VERSION && ap
 check('要求重启', applied.body.restartRequired === true)
 check('文件真的被换掉了', JSON.parse(readFileSync(join(fakeSelf, 'package.json'), 'utf8')).version === '9.9.9' && readFileSync(join(fakeSelf, 'lib', 'index.js'), 'utf8') === '// new\n')
 check('旧版本备份还在', existsSync(applied.body.backup) && JSON.parse(readFileSync(join(applied.body.backup, 'package.json'), 'utf8')).version === '0.1.0', String(applied.body.backup))
+
+// 这一条是 0.4.2 差点漏掉的：COPY_ENTRIES 不补 locale，补丁装上去了但显示名还是包名。
+const installedLocale = join(fakeSelf, 'locale', 'zh.json')
+check('locale 也跟着换成新版', existsSync(installedLocale) && JSON.parse(readFileSync(installedLocale, 'utf8')).meta.title === '灵犀 9.9.9', existsSync(installedLocale) ? readFileSync(installedLocale, 'utf8') : '缺 locale/zh.json')
 
 console.log('\n异常情况：')
 releaseMode = 'wrong'
