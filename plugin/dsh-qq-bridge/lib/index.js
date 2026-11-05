@@ -25,7 +25,7 @@ export const name = 'qq-bridge'
 const ROUTE_BASE = '/dsh-qq-bridge'
 
 /** 插件版本。status 和 /api 都报这一个，别再各写各的。 */
-const PLUGIN_VERSION = '0.3.3'
+const PLUGIN_VERSION = '0.4.1'
 
 /** 这个插件自己的目录（被「检查更新」覆盖的就是它）。 */
 const SELF_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -319,9 +319,35 @@ function spawnBridgeAlign() {
 }
 
 /**
+ * config.json 里记着的那个 DSH 端口，现在还有人听吗。
+ *
+ * 这是判断「桥接是不是连错了地址」最省事的办法：DSH 每次重启会换端口，
+ * 旧端口立刻没人听。反过来，旧端口还活着就说明 DSH 没换地址（或者又抽中同一个），
+ * 那不该去动桥接。读不懂地址就当「还活着」——宁可不动，也不要反复重启人家的桥接。
+ */
+async function configuredDshPortAlive(config) {
+  const url = config?.dsh?.baseUrl
+  if (typeof url !== 'string' || url.trim() === '') return true
+  let port = 0
+  try {
+    port = Number(new URL(url.trim()).port)
+  } catch {
+    return true
+  }
+  if (!Number.isFinite(port) || port <= 0) return true
+  return portOpen(port, 800)
+}
+
+/**
  * DSH 一退出，桥接就会跟着退（它盯的是 DSH 的事件流，流断就收工）。
  * 而看门狗 10 分钟才巡一次 —— 中间这段时间，用户看到的就是「桥接没有在运行」。
- * 所以宿主每次加载都主动看一眼：桥接在跑就什么都不做，没在跑就后台拉起来。
+ * 所以宿主每次加载都主动看一眼，两种情况都要管：
+ *
+ *   1. 桥接没在跑 → 后台拉起来（会先对齐端口）；
+ *   2. 桥接在跑，但它认的 DSH 端口已经没人听了 → DSH 重启换了端口，
+ *      那盏「DSH 灯」会一直红着，片头和设置页都会显示「待修」。
+ *      这就是 2026-11-05 早上那次：桥接好好的，只有 dsh:false，
+ *      而旧逻辑「端口在听就什么都不做」正好绕过了它。
  */
 async function maybeAutoStartBridge() {
   if (process.env.DSH_QQ_BRIDGE_NO_AUTOSTART === '1') return
@@ -329,9 +355,18 @@ async function maybeAutoStartBridge() {
     const config = readConfig()
     if (config !== null && config.autoStartBridge === false) return
     if (!existsSync(join(bridgeRoot(), 'src', 'bridge.js'))) return
-    if (await portOpen(3100, 1500)) return
+
+    if (!(await portOpen(3100, 1500))) {
+      if (spawnBridgeAlign()) {
+        console.log('[dsh-qq-bridge] 桥接没在跑，已在后台拉起（会先对齐 DSH 端口）')
+      }
+      return
+    }
+
+    // 在跑，但连的是上一代 DSH 地址 —— 重启一次就好，不然那盏灯永远红着。
+    if (await configuredDshPortAlive(config)) return
     if (spawnBridgeAlign()) {
-      console.log('[dsh-qq-bridge] 桥接没在跑，已在后台拉起（会先对齐 DSH 端口）')
+      console.log('[dsh-qq-bridge] 桥接认的 DSH 端口已经变了，正在重新对齐')
     }
   } catch (error) {
     console.error('[dsh-qq-bridge] 自动拉起桥接时出错', error)
@@ -1100,7 +1135,7 @@ function createHandlers() {
         ok: snowlumaOk,
         // 桥接没跑时端口探不准（5099 可能是别的东西）：明确说「还不知道」，别装成红的。
         unknown: !bridgePresent,
-        hint: bridgePresent ? '这个要另外装：打开 SnowLuma，用手机 QQ 扫它显示的二维码登录' : '桥接还没装好，这项看不出来'
+        hint: bridgePresent ? '这个要另外装：点「怎么装 SnowLuma」。先登录官方 QQ，再让它接上 QQ 进程' : '桥接还没装好，这项看不出来'
       },
       {
         id: 'onebot',
@@ -1176,7 +1211,8 @@ function createHandlers() {
         { path: '/diagnose', methods: ['GET'], desc: '一键诊断：版本、路径、四灯、最近日志拼成一段文本' },
         { path: '/backups', methods: ['GET', 'POST'], desc: '备份列表 / 还原（kind=config|role|prompt）' },
         { path: '/voice/preview', methods: ['POST'], desc: '语音试听：{text} → 直接返回音频' },
-        { path: '/api', methods: ['GET'], desc: '这份清单本身' }
+        { path: '/api', methods: ['GET'], desc: '这份清单本身' },
+        { path: '/peer', methods: ['GET'], desc: '同一台机器上还装着哪些带界面的 DSH 插件（给「互相认得」用）' }
       ],
       slots: {
         card: {
@@ -1193,9 +1229,48 @@ function createHandlers() {
         '失败统一是 { ok:false, error:"说明" }，HTTP 状态码表意（400 参数错、403 跨站、404 没有、405 方法不对）',
         '写接口（POST）要求同源：浏览器带 Origin 必须指向本机，否则 403；不带 Origin 的本机脚本放行',
         '路由只增不改：要换结构就加新路径，别让别人的代码半夜失效',
-        '扩展卡片自己包一层 .qbg-card（本插件样式表里有），别去改核心卡片的 DOM'
+        '扩展卡片自己包一层 .qbg-card（本插件样式表里有），别去改核心卡片的 DOM',
+        '想让这里用你的中文名显示，在你自己 package.json 的顶层写 "dshLabel": "星图开机"（没有就用包名）'
       ]
     })
+  }
+
+  /**
+   * 邻接插件：同一台机器上还装着谁。
+   *
+   * 只读 `.dsh/plugins/<包名>/package.json`，**不启动、不调用**任何人——这里只回答
+   * 「装了什么、什么版本」。判断某个插件死活是它自己的事（比如星图开机自己会报）。
+   * 只列有浏览器那一半的（`dsh.client`），因为只有它们才可能跟这一页有交集。
+   */
+  const peerHandler = async (req, res) => {
+    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: '只支持 GET' })
+    const pluginsDir = dirname(SELF_DIR)
+    const peers = []
+    let entries = []
+    try {
+      entries = readdirSync(pluginsDir, { withFileTypes: true })
+    } catch (error) {
+      return sendJson(res, 200, { ok: true, dir: pluginsDir, peers: [], error: '读不到插件目录' })
+    }
+    for (const entry of entries) {
+      // junction / 符号链接也算：装插件的人常用 mklink。
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+      if (entry.name === basename(SELF_DIR)) continue
+      const manifest = readJson(join(pluginsDir, entry.name, 'package.json'), null)
+      if (manifest === null || typeof manifest !== 'object') continue
+      const client = manifest.dsh && typeof manifest.dsh === 'object' ? manifest.dsh.client : null
+      if (client === null || client === undefined) continue
+      const name = typeof manifest.name === 'string' && manifest.name !== '' ? manifest.name : entry.name
+      const label = typeof manifest.dshLabel === 'string' && manifest.dshLabel.trim() !== '' ? manifest.dshLabel.trim() : name
+      peers.push({
+        name,
+        label,
+        version: typeof manifest.version === 'string' ? manifest.version : '',
+        description: typeof manifest.description === 'string' ? manifest.description : ''
+      })
+    }
+    peers.sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'))
+    return sendJson(res, 200, { ok: true, dir: pluginsDir, peers: peers.slice(0, 20) })
   }
 
   /** 一键诊断：把排查要用的东西拼成一段能直接粘出去的文本。 */
@@ -1388,7 +1463,7 @@ function createHandlers() {
     }
   }
 
-  return { statusHandler, configHandler, rolesHandler, roleHandler, roleEditHandler, actionHandler, settingsHandler, logsHandler, slangHandler, stickersHandler, promptHandler, digestHandler, socialHandler, memoryHandler, setupHandler, apiHandler, updateHandler, diagnoseHandler, backupsHandler, voicePreviewHandler }
+  return { statusHandler, configHandler, rolesHandler, roleHandler, roleEditHandler, actionHandler, settingsHandler, logsHandler, slangHandler, stickersHandler, promptHandler, digestHandler, socialHandler, memoryHandler, setupHandler, apiHandler, peerHandler, updateHandler, diagnoseHandler, backupsHandler, voicePreviewHandler }
 }
 
 export function apply(ctx) {
@@ -1433,6 +1508,7 @@ export function apply(ctx) {
       webCtx.effect(() => register(ROUTE_BASE + '/memory', handlers.memoryHandler, 'memory'), 'qq-bridge: memory')
       webCtx.effect(() => register(ROUTE_BASE + '/setup', handlers.setupHandler, 'setup'), 'qq-bridge: setup')
       webCtx.effect(() => register(ROUTE_BASE + '/api', handlers.apiHandler, 'api'), 'qq-bridge: api')
+    webCtx.effect(() => register(ROUTE_BASE + '/peer', handlers.peerHandler, 'peer'), 'qq-bridge: peer')
       webCtx.effect(() => register(ROUTE_BASE + '/update', handlers.updateHandler, 'update'), 'qq-bridge: update')
       webCtx.effect(() => register(ROUTE_BASE + '/diagnose', handlers.diagnoseHandler, 'diagnose'), 'qq-bridge: diagnose')
       webCtx.effect(() => register(ROUTE_BASE + '/backups', handlers.backupsHandler, 'backups'), 'qq-bridge: backups')
@@ -1458,4 +1534,13 @@ export function apply(ctx) {
     console.error('[dsh-qq-bridge] 自动拉起桥接没排上', error)
     scheduleAutoStart()
   }
+}
+
+/**
+ * 给自测用的钩子：这两个函数平时只被 5 秒后的定时器调用，测试里不该真的去
+ * 起进程、也不该等 5 秒，所以单独开出来，让测试直接喂一条 config 进来。
+ */
+export const __internal = {
+  configuredDshPortAlive,
+  maybeAutoStartBridge
 }
