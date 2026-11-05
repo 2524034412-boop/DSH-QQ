@@ -15,7 +15,7 @@
  * 安全线：
  *   - 解压出来的路径必须在临时目录里面（防 zip-slip）
  *   - 覆盖之前先把当前插件整份备份到插件目录旁边的 .backup/ 下
- *   - 只覆盖 package.json / cordis.patch.yml / README.md / lib / docs / locale，不删别的
+ *   - 只覆盖 package.json / cordis.patch.yml / README.md / CHANGELOG.md / lib / docs / locale，不删别的
  */
 
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -54,7 +54,7 @@ trustSystemCertificates()
 const CONFIG_FILE_NAME = 'dsh-qq-bridge-update.json'
 
 /** 认识的文件/目录名（多一个都不覆盖）。 */
-const COPY_ENTRIES = ['package.json', 'cordis.patch.yml', 'README.md', 'lib', 'docs', 'locale']
+const COPY_ENTRIES = ['package.json', 'cordis.patch.yml', 'README.md', 'CHANGELOG.md', 'lib', 'docs', 'locale']
 const ASSET_PATTERN = /^dsh-qq-bridge-.*\.zip$/i
 const TAG_PATTERN = /^qq-bridge-v?/i
 const MAX_ASSET_BYTES = 30 * 1024 * 1024
