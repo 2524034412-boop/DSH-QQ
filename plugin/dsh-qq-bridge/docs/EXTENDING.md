@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | **卡片扩展槽** | 有浏览器那一半的 DSH 插件 | `ctx.slots.inject('settings.qq-bridge.card', …)` |
 | **HTTP 接口** | 任何进程 / 任何语言 | `GET http://127.0.0.1:<DSH 端口>/dsh-qq-bridge/…` |
-| **邻接发现** | 想知道「这台机器上还装着谁」 | `GET /dsh-qq-bridge/peer`，中文名读你自己 `package.json` 的 `dshLabel` |
+| **邻接发现** | 想知道「这台机器上还装着谁」 | `GET /dsh-qq-bridge/peer`，中文名读你 `locale/zh.json` 的 `meta.title`（DSH 插件列表同源） |
 
 三条都是**只增不改**的：以后加东西往清单里加，不会让别人的代码半夜失效。
 
@@ -201,11 +201,28 @@ GET /dsh-qq-bridge/api
 | `/api` | GET | 这份清单 |
 
 `/peer` 只看**声明了 `dsh.client` 的插件**（没有浏览器那一半的插件跟这一页不会有交集），
-不启动、不调用任何人。想让它显示中文名，在你自己的 `package.json` 顶层写一行：
+不启动、不调用任何人。
+
+**显示名怎么来的（三级）**：
+
+| 优先级 | 来源 | 说明 |
+| --- | --- | --- |
+| 1 | `package.json` 的 `dshLabel` | 早期自己定的字段，仍然认 |
+| 2 | `locale/zh.json` 的 `meta.title` | **推荐**：DSH 插件列表读的就是这里，一处改名两边都对 |
+| 3 | 包名 | 都没有时 |
+
+推荐写法（顺便让 DSH 的「设置 → 插件」也显示中文名）：
 
 ```json
-{ "name": "dsh-star-boot", "dshLabel": "星图开机" }
+// package.json
+{ "name": "dsh-star-boot", "exports": { "./locale/*": "./locale/*" }, "files": ["lib", "locale"] }
+
+// locale/zh.json
+{ "meta": { "title": "星图开机", "description": "一句话说明" } }
 ```
+
+`exports` 里那条 `./locale/*` **不能漏**：漏了 Node 解析不到这个文件，标题就退回包名。
+这是 2026-11-05 踩过的坑——插件一直好好地在列表里，只是名字是 `dsh-qq-bridge`。
 
 ### 本机脚本示例
 
