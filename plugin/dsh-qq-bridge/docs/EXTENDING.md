@@ -6,8 +6,14 @@
 | --- | --- | --- |
 | **卡片扩展槽** | 有浏览器那一半的 DSH 插件 | `ctx.slots.inject('settings.qq-bridge.card', …)` |
 | **HTTP 接口** | 任何进程 / 任何语言 | `GET http://127.0.0.1:<DSH 端口>/dsh-qq-bridge/…` |
+| **邻接发现** | 想知道「这台机器上还装着谁」 | `GET /dsh-qq-bridge/peer`，中文名读你自己 `package.json` 的 `dshLabel` |
 
-两条都是**只增不改**的：以后加东西往清单里加，不会让别人的代码半夜失效。
+三条都是**只增不改**的：以后加东西往清单里加，不会让别人的代码半夜失效。
+
+> 已经有一个真实使用者了：**星图开机**（`dsh-star-boot`）。它往扩展槽里注册了片头卡片，
+> 反向又让片头显示本插件的四盏灯。那份代码在 `%USERPROFILE%\.dsh\plugins\dsh-star-boot\lib\client.js`
+> 的 `QQBridgeCard` / `mountQQBridgeCard` 里，可以照抄。
+
 
 ---
 
@@ -191,7 +197,15 @@ GET /dsh-qq-bridge/api
 | `/social` | GET | 事件、印象、好感度 |
 | `/memory` | GET | 记忆星图地址（带控制台令牌，可直接给 iframe / 新窗口；页面本身 `frame-ancestors *`） |
 | `/update` | GET / POST | 检查更新；`POST {action:"apply"}` 下载并装上最新补丁包 |
+| `/peer` | GET | 同机插件：`{ peers: [{ name, label, version, description }] }`，只读 `plugins/<包名>/package.json` |
 | `/api` | GET | 这份清单 |
+
+`/peer` 只看**声明了 `dsh.client` 的插件**（没有浏览器那一半的插件跟这一页不会有交集），
+不启动、不调用任何人。想让它显示中文名，在你自己的 `package.json` 顶层写一行：
+
+```json
+{ "name": "dsh-star-boot", "dshLabel": "星图开机" }
+```
 
 ### 本机脚本示例
 
@@ -213,7 +227,37 @@ Invoke-RestMethod http://127.0.0.1:59479/dsh-qq-bridge/action -Method Post \
 
 ---
 
-## 三、兼容承诺
+## 三、已经接上的一条真实链路（值得照抄）
+
+「星图开机」和本插件互不认识对方的代码，只认槽位名和接口，两个方向各走一步：
+
+**① 星图开机 → 本页（用扩展槽）**
+
+```js
+ctx.slots.inject('settings.qq-bridge.card', () =>
+  ctx.slots.register({ name: 'settings.qq-bridge.card', id: 'star-boot', order: 100 }, QQBridgeCard)
+)
+```
+
+卡片里它自己读 `/dsh-star-boot/config`、`/dsh-star-boot/card`，画成
+「片头模式 / 背景 / 此刻会显示什么 / 四盏灯 + 预览片头 + 打开片头设置」。
+`window.__starBootPreview()` 是它给自己留的全局入口，所以这里点「预览片头」能直接放一次片头。
+
+**② 本页 → 星图开机（读接口）**
+
+它开机时**比本插件早**，所以不能指望本插件的接口还活着。片头卡上那四盏灯是宿主直接问桥接的：
+
+```
+http://127.0.0.1:3100/diag   ->  { dsh, snowluma, onebot, qq, note }
+```
+
+拿不到就**少画一行**，不画四个灰点——降级要能被看出来，而不是假装知道。
+
+两条线的共同点：**谁缺席都不报错**。灵犀没装，星图照常开机；星图没装，这一页跟以前一模一样。
+
+---
+
+## 四、兼容承诺
 
 - 路由和槽位**只增不改**；真要换结构，加新路径（`/v2/…` 之类），旧的继续在。
 - 契约版本放在 `/api` 的 `schemaVersion`（现在是 `1`）。它变了才需要你改代码。
