@@ -25,7 +25,7 @@ export const name = 'qq-bridge'
 const ROUTE_BASE = '/dsh-qq-bridge'
 
 /** 插件版本。status 和 /api 都报这一个，别再各写各的。 */
-const PLUGIN_VERSION = '0.4.3'
+const PLUGIN_VERSION = '0.4.4'
 
 /** 这个插件自己的目录（被「检查更新」覆盖的就是它）。 */
 const SELF_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
