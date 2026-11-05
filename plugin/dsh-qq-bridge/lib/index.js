@@ -25,7 +25,7 @@ export const name = 'qq-bridge'
 const ROUTE_BASE = '/dsh-qq-bridge'
 
 /** 插件版本。status 和 /api 都报这一个，别再各写各的。 */
-const PLUGIN_VERSION = '0.4.1'
+const PLUGIN_VERSION = '0.4.3'
 
 /** 这个插件自己的目录（被「检查更新」覆盖的就是它）。 */
 const SELF_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -1230,7 +1230,7 @@ function createHandlers() {
         '写接口（POST）要求同源：浏览器带 Origin 必须指向本机，否则 403；不带 Origin 的本机脚本放行',
         '路由只增不改：要换结构就加新路径，别让别人的代码半夜失效',
         '扩展卡片自己包一层 .qbg-card（本插件样式表里有），别去改核心卡片的 DOM',
-        '想让这里用你的中文名显示，在你自己 package.json 的顶层写 "dshLabel": "星图开机"（没有就用包名）'
+        '想让这里用你的中文名显示，写 locale/zh.json 的 {"meta":{"title":"星图开机"}}（DSH 插件列表也读这里）；老写法 package.json 的 dshLabel 仍然认，没有就用包名'
       ]
     })
   }
@@ -1238,8 +1238,8 @@ function createHandlers() {
   /**
    * 邻接插件：同一台机器上还装着谁。
    *
-   * 只读 `.dsh/plugins/<包名>/package.json`，**不启动、不调用**任何人——这里只回答
-   * 「装了什么、什么版本」。判断某个插件死活是它自己的事（比如星图开机自己会报）。
+   * 只读 `.dsh/plugins/<包名>/package.json` 和它的 `locale/`，**不启动、不调用**任何人——
+   * 这里只回答「装了什么、什么版本」。判断某个插件死活是它自己的事（比如星图开机自己会报）。
    * 只列有浏览器那一半的（`dsh.client`），因为只有它们才可能跟这一页有交集。
    */
   const peerHandler = async (req, res) => {
@@ -1256,12 +1256,28 @@ function createHandlers() {
       // junction / 符号链接也算：装插件的人常用 mklink。
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
       if (entry.name === basename(SELF_DIR)) continue
-      const manifest = readJson(join(pluginsDir, entry.name, 'package.json'), null)
+      const dir = join(pluginsDir, entry.name)
+      const manifest = readJson(join(dir, 'package.json'), null)
       if (manifest === null || typeof manifest !== 'object') continue
       const client = manifest.dsh && typeof manifest.dsh === 'object' ? manifest.dsh.client : null
       if (client === null || client === undefined) continue
       const name = typeof manifest.name === 'string' && manifest.name !== '' ? manifest.name : entry.name
-      const label = typeof manifest.dshLabel === 'string' && manifest.dshLabel.trim() !== '' ? manifest.dshLabel.trim() : name
+
+      // 显示名三级：dshLabel（本插件早期约定的）→ locale/zh.json 的 meta.title（DSH 自己也读这里）→ 包名。
+      // 优先读 locale 是因为那是官方口径：插件只要写了 locale，DSH 的插件列表和这张卡就同名。
+      let label = typeof manifest.dshLabel === 'string' ? manifest.dshLabel.trim() : ''
+      if (label === '') {
+        for (const lang of ['zh', 'en']) {
+          const meta = readJson(join(dir, 'locale', lang + '.json'), null)
+          const title = meta && typeof meta === 'object' && meta.meta ? meta.meta.title : null
+          if (typeof title === 'string' && title.trim() !== '') {
+            label = title.trim()
+            break
+          }
+        }
+      }
+      if (label === '') label = name
+
       peers.push({
         name,
         label,
