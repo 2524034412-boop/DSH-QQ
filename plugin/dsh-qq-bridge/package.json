@@ -1,6 +1,6 @@
 {
   "name": "dsh-qq-bridge",
-  "version": "0.4.1",
+  "version": "0.4.3",
   "private": true,
   "description": "把 qq-bridge 的控制台搬进 DSH 设置：状态、白名单、角色、重启与测试发送，并留一张可扩展的卡片槽。",
   "type": "module",
@@ -9,13 +9,15 @@
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*": "./locale/*"
   },
   "files": [
     "lib",
     "docs",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "locale"
   ],
   "license": "MIT",
   "engines": {
