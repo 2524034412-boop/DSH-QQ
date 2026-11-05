@@ -9,7 +9,9 @@ window.__ModuleLoader__.load({
 
     const BASE = '/dsh-qq-bridge'
     const STATUS_MS = 10000
-    const PLUGIN_VERSION = '0.3.3'
+    const PLUGIN_VERSION = '0.4.1'
+    // SnowLuma 是第三方项目，不随包分发：给一份我们写的安装说明。
+    const SNOWLUMA_GUIDE = 'https://github.com/2524034412-boop/DSH-QQ/blob/main/docs/SNOWLUMA.md'
 
     /*
      * 卡片扩展槽。
@@ -215,6 +217,9 @@ window.__ModuleLoader__.load({
         ready
           ? null
           : h('div', { className: 'qbg-row', style: { marginTop: '10px' } },
+              steps.some((step) => step.id === 'snowluma' && step.ok !== true)
+                ? h('button', { className: 'qbg-btn qbg-primary', onClick: () => window.open(SNOWLUMA_GUIDE, '_blank', 'noopener') }, '怎么装 SnowLuma')
+                : null,
               h('button', { className: 'qbg-btn', onClick: () => window.open('http://127.0.0.1:5099', '_blank', 'noopener') }, '打开 SnowLuma'),
               h('button', { className: 'qbg-btn', disabled: busy, onClick: restart }, busy ? '重启中…' : '重启桥接'),
               steps.some((step) => step.id === 'config' && step.ok === false)
@@ -1530,6 +1535,28 @@ window.__ModuleLoader__.load({
       return 'home'
     }
 
+    /**
+     * 同机插件：这一页不假装自己是一切的入口。
+     *
+     * 只报事实（谁装了、什么版本），不替别人解释自己；读不到就整张卡不出现。
+     * 想给这里一个中文名，插件自己的 package.json 顶层写 "dshLabel" 就行。
+     */
+    function PeersCard() {
+      const [state] = useJson(BASE + '/peer')
+      const peers = state.data !== null && Array.isArray(state.data.peers) ? state.data.peers : []
+      if (peers.length === 0) return null
+      return h('div', { className: 'qbg-card' },
+        h('p', { className: 'qbg-title' }, '同机插件'),
+        h('div', { className: 'qbg-row' },
+          peers.map((peer) => h('span', { key: peer.name, className: 'qbg-chip', title: peer.description || peer.name },
+            peer.label,
+            peer.version !== '' ? h('small', { style: { opacity: 0.55, marginLeft: '4px' } }, 'v' + peer.version) : null
+          ))
+        ),
+        h('p', { className: 'qbg-note' }, '它们各有自己的设置分区。别家插件也可以往本页插卡片——「系统」标签最下面那块是留给它们的。')
+      )
+    }
+
     /** 顶部名片：名字 + 一句话 + 实时状态胶囊。只读 status，不额外请求。 */
     function Hero(props) {
       const data = props.data
@@ -1610,7 +1637,7 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'qbg-page' },
         hero,
         h(Tabs, { value: tab, onChange: setTab }),
-        section(tab === 'home', h(GuideCard), h(StatusCard, { status: state }), h(Actions, { status: state })),
+        section(tab === 'home', h(GuideCard), h(StatusCard, { status: state }), h(Actions, { status: state }), h(PeersCard)),
         section(tab === 'link', h(AccessCard), h(ModeAndFlagsCard)),
         section(tab === 'soul', h(RoleCard), h(SlangCard), h(StickerCard), h(PromptCard)),
         section(tab === 'mind', h(MemoryCard, { active: tab === 'mind' }), h(SocialCard), h(DigestCard)),
