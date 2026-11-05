@@ -22,6 +22,30 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { dirname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
+import tls from 'node:tls'
+
+/**
+ * 把系统根证书并进 Node 的信任链。
+ *
+ * 为什么非做不可：这台机器上 Node 自带的 CA 包认不出 GitHub 的证书
+ * （`UNABLE_TO_VERIFY_LEAF_SIGNATURE`，通常是中间有个安全软件/代理在换证书），
+ * 结果是「检查更新」永远报 fetch failed —— 功能看着在、其实一次也没成过。
+ * 命令行可以加 `--use-system-ca`，但插件跑在 DSH 进程里，加不了启动参数，
+ * 只能在代码里合并。Node 22+/24 提供这两个 API；老版本就静静跳过，行为跟以前一样。
+ */
+let caMerged = false
+function trustSystemCertificates() {
+  if (caMerged) return
+  caMerged = true
+  try {
+    if (typeof tls.getCACertificates !== 'function' || typeof tls.setDefaultCACertificates !== 'function') return
+    const merged = [...tls.getCACertificates('default'), ...tls.getCACertificates('system')]
+    tls.setDefaultCACertificates([...new Set(merged)])
+  } catch {
+    /* 拿不到系统证书库（权限、平台差异）就照旧用内置的 */
+  }
+}
+trustSystemCertificates()
 
 /**
  * 更新源要用户自己填（这个项目还没开源，各家仓库也不一样）。
