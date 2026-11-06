@@ -25,7 +25,7 @@ export const name = 'qq-bridge'
 const ROUTE_BASE = '/dsh-qq-bridge'
 
 /** 插件版本。status 和 /api 都报这一个，别再各写各的。 */
-const PLUGIN_VERSION = '0.4.4'
+const PLUGIN_VERSION = '0.4.5'
 
 /** 这个插件自己的目录（被「检查更新」覆盖的就是它）。 */
 const SELF_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -439,7 +439,37 @@ const FLAGS = {
   'socialV2.biliDigest.enabled': { group: '学习', label: '刷B站摘要', hint: '每天把刷到的视频带进上下文' },
   'security.interceptNotify': { group: '安全', label: '拦截通知', hint: '拦下危险消息时告诉你' },
   'hideConsolePages': { group: '安全', label: '隐藏旧控制台', hint: '默认开启，只关 /panel 那个旧控制台；总控可视化面板 /dashboard 和记忆星图 /memory 一直可用' },
-  'autoStartBridge': { group: '运行', label: 'DSH 启动时自动拉起桥接', hint: '默认开启。DSH 一退出桥接就会跟着退，关了就得自己点「重启桥接」' }
+  'autoStartBridge': { group: '运行', label: 'DSH 启动时自动拉起桥接', hint: '默认开启。DSH 一退出桥接就会跟着退，关了就得自己点「重启桥接」' },
+  // 反向开关：勾上 = 把 socialV2.budget.enabled 写成 false。见 FLAG_PATHS。
+  'fullSpeedMode': {
+    group: '运行',
+    label: '全速模式（不省算力）',
+    hint: '开：她一直用满强度——不限每小时回合数、推理强度不降、主动搭话不打折、学梗照常。'
+      + '关：工作日 9–12 / 14–18 走峰时省算力（推理强度降到 low、每人每小时 10 回合、主动搭话 ×0.3、暂停学梗）。'
+      + '切换后桥接会自动重启一次，约 10~15 秒。'
+  }
+}
+
+/**
+ * 开关名和 config 里的路径不一定同名。
+ *
+ * `fullSpeedMode` 是给人看的正面说法（勾上 = 全速），而桥接那边的开关是负面的
+ * `socialV2.budget.enabled`（true = 省算力）。两者取反，所以这里单独标一下，
+ * 免得以后有人照着名字直接 setPath 把逻辑写反。
+ */
+const FLAG_PATHS = {
+  fullSpeedMode: { path: 'socialV2.budget.enabled', invert: true }
+}
+
+/** 切换后必须重启桥接才生效的开关（桥接只在启动时读一次 config）。 */
+const FLAGS_NEED_RESTART = new Set(['fullSpeedMode'])
+
+function flagPath(key) {
+  return FLAG_PATHS[key]?.path ?? key
+}
+
+function flagInverts(key) {
+  return FLAG_PATHS[key]?.invert === true
 }
 
 /** 这几个开关「config 里没写」等于开（默认开），取反判断。 */
@@ -739,6 +769,15 @@ function createHandlers() {
       return sendJson(res, 200, { ok: true, status: result.status, note: '已在全屏窗口打开星图' })
     }
 
+    // 她的家：独立 3D 面板（/open-space 免令牌，桥接自己拉 Edge 应用窗口）。
+    if (action === 'open-space') {
+      const result = await bridgeFetch('/open-space', {}, 8000)
+      if (result.status === 0) {
+        return sendJson(res, 502, { ok: false, error: '桥接没在跑：' + String(result.data?.error ?? '连不上 127.0.0.1:3100') })
+      }
+      return sendJson(res, 200, { ok: true, status: result.status, note: '已在独立窗口打开她的家' })
+    }
+
     // 总控制可视化面板：桥接自己拉一个全屏窗口（/open-panel 免令牌，内部会带 token 打开 /dashboard）。
     if (action === 'open-dashboard') {
       const result = await bridgeFetch('/open-panel', {}, 8000)
@@ -759,9 +798,10 @@ function createHandlers() {
       const mode = readModeState()
       const flags = {}
       for (const key of Object.keys(FLAGS)) {
-        const raw = getPath(config, key)
+        const raw = getPath(config, flagPath(key))
         // 默认开的开关（旧面板隐藏、启动时拉起桥接）：config 里没有这个键时显示成「开」。
-        flags[key] = DEFAULT_TRUE_FLAGS.has(key) ? raw !== false : raw === true
+        const positive = DEFAULT_TRUE_FLAGS.has(key) ? raw !== false : raw === true
+        flags[key] = flagInverts(key) ? raw === false : positive
       }
       const numbers = {}
       for (const key of Object.keys(NUMBERS)) {
@@ -796,14 +836,19 @@ function createHandlers() {
     let touched = false
     const next = { ...config }
     const changed = []
+    // 有的开关光写 config 不够：桥接只在启动时读一次，得替用户重启一次，
+    // 否则「一键全速」点完了还是按旧的省算力跑，看着像没生效。
+    let needsRestart = false
 
     if (body.flags && typeof body.flags === 'object') {
       for (const [key, value] of Object.entries(body.flags)) {
         if (Object.prototype.hasOwnProperty.call(FLAGS, key) === false) continue
         if (typeof value !== 'boolean') continue
-        setPath(next, key, value)
+        // 反向开关（全速模式）写进去的是取反值，见 FLAG_PATHS。
+        setPath(next, flagPath(key), flagInverts(key) ? !value : value)
         changed.push(FLAGS[key].label + '=' + (value ? '开' : '关'))
         touched = true
+        if (FLAGS_NEED_RESTART.has(key)) needsRestart = true
       }
     }
 
@@ -874,9 +919,15 @@ function createHandlers() {
       }
     }
 
+    // 需要立即生效的开关：写完顺手把桥接重启掉（复用「重启桥接」那条路径，
+    // 它会先对齐 DSH 端口再拉起来），免得用户还要自己再点一次。
+    let restarted = false
+    if (touched && needsRestart) restarted = spawnBridgeAlign()
+
     return sendJson(res, 200, {
       ok: true,
       restartRequired: touched || modeChanged,
+      restarted,
       changed
     })
   }
