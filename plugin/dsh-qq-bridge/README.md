@@ -72,6 +72,7 @@ node test/config.mjs    # 14 项：写配置的原子性与备份
 node test/firstrun.mjs  # 18 项：把页面真渲染出来，盯「新用户第一屏」三个场景
 node test/update.mjs    # 19 项：假 GitHub + 假补丁包，走完 下载→解压→校验→备份→覆盖；含「没填仓库」的情况
 node test/realign.mjs   # 9 项：DSH 换了端口之后会不会自己去对齐（旧端口死=动手，还活着/读不懂=不动手）
+node test/fullspeed.mjs # 15 项：「全速模式」反向开关（勾上=budget.enabled:false），改名/写反都会被抓到
 ```
 
 ## 发补丁
@@ -109,6 +110,10 @@ node test/realign.mjs   # 9 项：DSH 换了端口之后会不会自己去对齐
 ```
 
 ## 版本
+
+`0.4.5` — 新增「全速模式（不省算力）」开关：勾上就关掉峰时省算力（不限每小时回合、推理强度不降、主动搭话不打折、学梗照常），
+并自动替你重启一次桥接。反向开关对应 config 的 `socialV2.budget.enabled`，`test/fullspeed.mjs` 15 项守它，
+其中一条专门验「绕过开关名直接写 config 路径会被忽略」。
 
 `0.4.1` — 修「桥接在跑但连的是上一代 DSH」：以前只在 3100 没在听时才去对齐端口，
 DSH 换端口之后桥接其实活得好好的、只是那盏 DSH 灯一直红着（片头/设置页显示「待修」）。
