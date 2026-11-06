@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
 
     const BASE = '/dsh-qq-bridge'
     const STATUS_MS = 10000
-    const PLUGIN_VERSION = '0.4.4'
+    const PLUGIN_VERSION = '0.4.5'
     // SnowLuma 是第三方项目，不随包分发：给一份我们写的安装说明。
     const SNOWLUMA_GUIDE = 'https://github.com/2524034412-boop/DSH-QQ/blob/main/docs/SNOWLUMA.md'
 
@@ -588,7 +588,15 @@ window.__ModuleLoader__.load({
         post(BASE + '/settings', patch)
           .then((result) => {
             if (result.ok && result.data && result.data.ok !== false) {
-              setMsg('已保存' + ((result.data.changed || []).length > 0 ? '：' + result.data.changed.join('、') : '') + (result.data.restartRequired ? '。重启桥接后生效。' : '。'))
+              const list = (result.data.changed || []).length > 0 ? '：' + result.data.changed.join('、') : ''
+              // 有的开关后端会顺手把桥接重启掉（比如「全速模式」），这时别说「重启后生效」，
+              // 否则用户会以为还得自己再去点一次「重启桥接」。
+              const tail = result.data.restarted === true
+                ? '。桥接正在重启，约 10~15 秒后生效。'
+                : result.data.restartRequired
+                  ? '。重启桥接后生效。'
+                  : '。'
+              setMsg('已保存' + list + tail)
               reload()
             } else {
               setMsg('失败：' + ((result.data && result.data.error) || result.status))
@@ -1142,6 +1150,40 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // 她的家：3D 房间面板。只做「开独立窗口」一件事 —— 3D 场景塞进这里的小 iframe
+    // 会又卡又看不清，而且它的相机/滚轮交互和设置页的滚动会打架。
+    function SpaceCard() {
+      const [busy, setBusy] = React.useState('')
+      const [msg, setMsg] = React.useState('')
+
+      const openWindow = () => {
+        setBusy('open')
+        setMsg('')
+        post(BASE + '/action', { action: 'open-space' })
+          .then((result) => {
+            const ok = result.ok && result.data && result.data.ok !== false
+            setMsg(ok ? '已经在独立窗口打开了（没出来就看看任务栏，或按 Ctrl+Alt+H）。' : '失败：' + ((result.data && result.data.error) || result.status))
+          })
+          .catch((error) => setMsg('失败：' + String(error && error.message ? error.message : error)))
+          .finally(() => setBusy(''))
+      }
+
+      return h(
+        'div',
+        { className: 'qbg-card' },
+        h('p', { className: 'qbg-title' }, '她的家'),
+        h('p', { className: 'qbg-note' }, '3D 房间：她现在待在哪儿、手边有什么。独立窗口打开，全屏、没有地址栏。'),
+        h('div', { className: 'qbg-row' },
+          h('button', {
+            className: 'qbg-btn qbg-primary',
+            disabled: busy !== '',
+            onClick: openWindow
+          }, busy === 'open' ? '打开中…' : '打开她的家')
+        ),
+        msg !== '' ? h('p', { className: msg.startsWith('失败') ? 'qbg-err' : 'qbg-note' }, msg) : null
+      )
+    }
+
     function RoleCard() {
       const [state, reload] = useJson(BASE + '/roles')
       const [picked, setPicked] = React.useState('')
@@ -1637,14 +1679,59 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'qbg-page' },
         hero,
         h(Tabs, { value: tab, onChange: setTab }),
-        section(tab === 'home', h(GuideCard), h(StatusCard, { status: state }), h(Actions, { status: state }), h(PeersCard)),
+        section(tab === 'home', h(GuideCard), h(StatusCard, { status: state }), h(SpaceCard), h(Actions, { status: state }), h(PeersCard)),
         section(tab === 'link', h(AccessCard), h(ModeAndFlagsCard)),
         section(tab === 'soul', h(RoleCard), h(SlangCard), h(StickerCard), h(PromptCard)),
         section(tab === 'mind', h(MemoryCard, { active: tab === 'mind' }), h(SocialCard), h(DigestCard)),
         section(tab === 'sys', h(UpdateCard, { active: tab === 'sys' }), h(BackupsCard), h(LogsCard), ext))
     }
 
+    // 输入框工具栏里的「她的家」快钮：点一下开独立 3D 面板，不占对话。
+    // 用内联样式而不是设置页的 qbg-btn，原因是 composer 的样式作用域和设置页不同，
+    // 借用那边的类名在这里会掉样式。
+    function SpaceQuickButton() {
+      const [busy, setBusy] = React.useState(false)
+      const open = () => {
+        if (busy) return
+        setBusy(true)
+        post(BASE + '/action', { action: 'open-space' })
+          .catch(() => {})
+          .finally(() => setBusy(false))
+      }
+      return h('button', {
+        type: 'button',
+        title: '打开她的家（3D 面板）',
+        'aria-label': '打开她的家',
+        onClick: open,
+        style: {
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: '26px', height: '26px', padding: 0, margin: '0 2px',
+          borderRadius: '7px', border: '1px solid rgba(140,170,220,.28)',
+          background: 'transparent', color: '#9db4d6', cursor: busy ? 'default' : 'pointer',
+          fontSize: '13px', lineHeight: 1, opacity: busy ? 0.5 : 1,
+          transition: 'background .15s, border-color .15s'
+        },
+        onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(120,160,220,.14)'; e.currentTarget.style.borderColor = 'rgba(140,180,255,.5)' },
+        onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'rgba(140,170,220,.28)' }
+      }, '⌂')
+    }
+
     function apply(ctx) {
+      // 先挂输入栏快钮（下面的设置页注册会 return，必须放在它前面）。
+      try {
+        if (ctx.slots && typeof ctx.slots.inject === 'function') {
+          const disposeQuick = ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
+            { name: 'conversation.input.left', id: 'qq-space-quick', order: 40, label: () => '她的家' },
+            SpaceQuickButton
+          ))
+          if (typeof disposeQuick === 'function' && typeof ctx.effect === 'function') {
+            ctx.effect(() => disposeQuick, 'qq-bridge: 输入栏「她的家」快钮')
+          }
+        }
+      } catch (error) {
+        console.warn('[dsh-qq-bridge] 输入栏快钮没挂上（旧版 DSH？）', error)
+      }
+
       // 正常路径带子槽位注册（别的插件才能往页面里加卡片）；
       // 万一这版 DSH 不认 children，就退回不带槽位的注册 —— 页面本身绝不能丢。
       const plain = { name: 'settings.section', id: 'qq-bridge', order: 27, label: () => BRAND + ' · QQ 桥接' }
