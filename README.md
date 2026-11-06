@@ -98,6 +98,30 @@ DSH → 设置 → QQ 桥接，五个标签，切走再回来输入不丢：
 设置 → QQ 桥接 → **系统** → 检查更新。
 仓库已经内置成更新源，以后发新版本点一下就装（只更新设置页插件，不碰桥接本体和你的数据）。
 
+## 已经装过 qq-bridge 了，还要装吗
+
+**不要跑安装包。** 安装包会再装一份 `qq-bridge` 到 `%USERPROFILE%\qq-bridge`，
+两份抢同一个 QQ 号，表现是「消息有时候回有时候不回」「记忆像是丢了」。
+
+已经装好、SnowLuma 也连上了，**只装插件**：
+
+1. 把 `plugin/dsh-qq-bridge` 放进 `%USERPROFILE%\.dsh\plugins\`
+2. 在该 profile 的 `package.json` 里登记依赖 + `dsh.profile.bundles`
+3. 重启 DSH
+
+插件默认**只读**：不改你的桥接代码、不碰 SnowLuma、不碰人格卡和记忆。
+
+### 怎么知道自己是不是装了两份
+
+仓库里的 [`tools/检查重复桥接.ps1`](tools/检查重复桥接.ps1)，一条命令看清：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File 检查重复桥接.ps1
+```
+
+它会列出所有找得到的 `qq-bridge` 目录、哪个正在 3100 上跑、每份里有多少 state 和人格卡，
+然后告诉你该留哪份。默认只看不动；加 `-Fix` 会把多余那份**改名挪走（不删除）**，
+并把 `qq-bridge-path.json` 指回保留的那份。
 ## 常见问题
 
 - **桥接没在跑** → 总览点「重启桥接」；点完还红就看「系统 → 日志」
