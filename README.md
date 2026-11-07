@@ -15,6 +15,8 @@
 
 | 版本 | 日期 | 一句话 |
 |---|---|---|
+| **安装包 2.8** | 11-07 | 修：解压后中文名乱码 / 报「缺少标志位」——改成 UTF-8 并补标志位；顺带剔掉模型和表情库，93 MB → 15 MB |
+| **0.4.5** | 11-06 | 新增「全速模式（不省算力）」一个开关，勾上自动重启桥接 |
 | **0.4.4** | 11-05 | 修：一键更新一直静默失败——Node 自带的根证书认不出 GitHub 的证书 |
 | **0.4.3** | 11-05 | 显示名统一读 `locale/zh.json`；「550C 开机」「刷B站」也有中文名了 |
 | **0.4.2** | 11-05 | 在「设置 → 插件」里显示成「灵犀 QQ 桥接」，不再是包名 |
@@ -82,7 +84,7 @@ DSH → 设置 → QQ 桥接，五个标签，切走再回来输入不丢：
 > **SnowLuma 怎么装？** 它不在本包里（第三方项目，有自己的许可）。下载、扫码、OneBot 端口、常见问题都写在
 > **[docs/SNOWLUMA.md](docs/SNOWLUMA.md)**。装完回到 DSH 点「重新检测」就行。
 
-1. 到 [Releases](https://github.com/2524034412-boop/DSH-QQ/releases) 下载最新的 `qq-bridge-installer-*-public.zip`（体积最大那个，17 MB 左右）
+1. 到 [Releases](https://github.com/2524034412-boop/DSH-QQ/releases) 下载最新的 `qq-bridge-installer-*-public.zip`（体积最大那个，15 MB 左右）
 2. 解压到任意位置，双击 **安装.cmd**
 3. 打开 DSH → 设置 → **灵犀 · QQ 桥接**，按「新手引导」走：
    - 装 SnowLuma：**先登录官方 QQ**（手机 QQ 扫码），再让 SnowLuma 接入 QQ 进程
@@ -129,6 +131,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File 检查重复桥接.ps1
 - **没有声音** → TTS 没配；最快是用 Edge TTS（不需要本地模型）
 - **她谁也不回** → 白名单是空的：至少加一个群或一个私聊
 - **界面没出现** → 重启一次 DSH
+- **解压出来文件名是乱码 / 报「缺少标志位」** → 下到的是 2.7 及更早的包。那些包的
+  `安装.cmd`、`一键开启对接.cmd` 等中文名是 GBK 且没打 UTF-8 标志位，中文 Windows 自己解压看着正常，
+  换台机器、用 7-Zip、或者开了 Win11 的「Beta: 使用 UTF-8」就会乱。改用
+  **2.8**（`qq-bridge-installer-2.8-public.zip`），里面全部是 UTF-8 + 标志位；
+  万一你手上只有旧包，解压时选 GBK / 936 编码也能救回来。
 
 ## 交流
 
