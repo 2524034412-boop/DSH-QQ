@@ -1,0 +1,270 @@
+{
+  "version": 2,
+  "unit": "m",
+  "note": "房子骨架。坐标单位米；x 向右、z 向前（越大越靠近镜头）。floor 决定归哪个楼层页；label 是 Agent 说「去XX」时要匹配的名字，aliases 只放别称（不含 label 本身）。锚点（anchors）先留空：等模型建好、家具位置定下来再填绝对坐标，否则会和模型对不上。",
+  "floors": [
+    {
+      "id": "1f",
+      "label": "一楼"
+    },
+    {
+      "id": "2f",
+      "label": "二楼"
+    },
+    {
+      "id": "out",
+      "label": "花园"
+    }
+  ],
+  "rooms": [
+    {
+      "id": "kitchen",
+      "label": "厨房",
+      "floor": "1f",
+      "kind": "room",
+      "aliases": [
+        "灶台",
+        "餐厅",
+        "做饭"
+      ],
+      "x": 2.25,
+      "z": 2.5,
+      "w": 4.5,
+      "d": 5,
+      "floorColor": "#3a3226",
+      "wallColor": "#6b573c",
+      "anchors": [],
+      "window": "sea"
+    },
+    {
+      "id": "study",
+      "label": "书房",
+      "floor": "1f",
+      "kind": "room",
+      "aliases": [
+        "书桌",
+        "书架",
+        "看书"
+      ],
+      "x": 7,
+      "z": 2.5,
+      "w": 5,
+      "d": 5,
+      "floorColor": "#26313f",
+      "wallColor": "#3d5375",
+      "anchors": [],
+      "window": "sea"
+    },
+    {
+      "id": "living",
+      "label": "客厅",
+      "floor": "1f",
+      "kind": "room",
+      "aliases": [
+        "沙发",
+        "电视",
+        "茶几"
+      ],
+      "x": 4.75,
+      "z": 8,
+      "w": 9.5,
+      "d": 6,
+      "floorColor": "#332e28",
+      "wallColor": "#5c4d3a",
+      "anchors": []
+    },
+    {
+      "id": "bath",
+      "label": "厕所",
+      "floor": "1f",
+      "kind": "room",
+      "aliases": [
+        "浴室",
+        "卫生间",
+        "洗手间",
+        "浴缸",
+        "泡澡"
+      ],
+      "x": 11,
+      "z": 6.5,
+      "w": 3,
+      "d": 3,
+      "floorColor": "#2a3a3a",
+      "wallColor": "#43706e",
+      "anchors": []
+    },
+    {
+      "id": "hall",
+      "label": "门厅",
+      "floor": "1f",
+      "kind": "room",
+      "aliases": [
+        "玄关",
+        "门口",
+        "进门"
+      ],
+      "x": 11.75,
+      "z": 9.5,
+      "w": 4.5,
+      "d": 3,
+      "floorColor": "#35302b",
+      "wallColor": "#5a4f42",
+      "anchors": []
+    },
+    {
+      "id": "stairs",
+      "label": "楼梯",
+      "floor": "1f",
+      "kind": "room",
+      "aliases": [
+        "楼上",
+        "楼下",
+        "上楼"
+      ],
+      "x": 13.25,
+      "z": 6.5,
+      "w": 1.5,
+      "d": 3,
+      "floorColor": "#2e2a26",
+      "wallColor": "#4a423a",
+      "anchors": []
+    },
+    {
+      "id": "bedroom",
+      "label": "卧室",
+      "floor": "2f",
+      "kind": "room",
+      "aliases": [
+        "床",
+        "睡觉",
+        "卧室里"
+      ],
+      "x": 2.5,
+      "z": 3.25,
+      "w": 5,
+      "d": 6.5,
+      "floorColor": "#332a33",
+      "wallColor": "#6a4f6b",
+      "anchors": [],
+      "window": "sea"
+    },
+    {
+      "id": "guest",
+      "label": "客房",
+      "floor": "2f",
+      "kind": "room",
+      "aliases": [
+        "客卧",
+        "客房里"
+      ],
+      "x": 7.25,
+      "z": 2,
+      "w": 4.5,
+      "d": 4,
+      "floorColor": "#2c3038",
+      "wallColor": "#4a5568",
+      "anchors": [],
+      "window": "sea"
+    },
+    {
+      "id": "storage",
+      "label": "储物间",
+      "floor": "2f",
+      "kind": "room",
+      "aliases": [
+        "仓库",
+        "杂物间",
+        "杂物"
+      ],
+      "x": 7.25,
+      "z": 5.25,
+      "w": 4.5,
+      "d": 2.5,
+      "floorColor": "#302a24",
+      "wallColor": "#54483a",
+      "anchors": []
+    },
+    {
+      "id": "corridor",
+      "label": "走廊",
+      "floor": "2f",
+      "kind": "room",
+      "aliases": [
+        "过道",
+        "二楼走廊"
+      ],
+      "x": 4.75,
+      "z": 8,
+      "w": 9.5,
+      "d": 3,
+      "floorColor": "#2f2c28",
+      "wallColor": "#4d453c",
+      "anchors": []
+    },
+    {
+      "id": "garden",
+      "label": "花园",
+      "floor": "out",
+      "kind": "outdoor",
+      "aliases": [
+        "院子",
+        "草地",
+        "后花园"
+      ],
+      "x": 6,
+      "z": 3.5,
+      "w": 12,
+      "d": 7,
+      "floorColor": "#1d3324",
+      "wallColor": "#2c4a34",
+      "anchors": []
+    },
+    {
+      "id": "pool",
+      "label": "泳池",
+      "floor": "out",
+      "kind": "water",
+      "aliases": [
+        "池子",
+        "游泳",
+        "水里",
+        "水面"
+      ],
+      "x": 6.5,
+      "z": 4,
+      "w": 7,
+      "d": 4,
+      "floorColor": "#123a4d",
+      "wallColor": "#2d6b85",
+      "anchors": []
+    }
+  ],
+  "outside": {
+    "label": "外面",
+    "floor": "out",
+    "x": 6,
+    "z": 10.5
+  },
+  "scenery": {
+    "note": "海在后墙(-z)方向，草坪在前门(+z)方向；页面按楼层画，这里只声明归属。",
+    "sea": {
+      "floors": [
+        "1f",
+        "2f"
+      ],
+      "z": -16,
+      "w": 200,
+      "d": 80,
+      "color": "#0d2a3d"
+    },
+    "lawn": {
+      "floors": [
+        "1f"
+      ],
+      "z": 16,
+      "w": 60,
+      "d": 16,
+      "color": "#223a26"
+    }
+  }
+}
