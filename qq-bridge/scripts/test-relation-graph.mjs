@@ -45,11 +45,11 @@ ok('非法 uid / 自己 / 主人被剔除', () => {
 ok('昵称是她自己的条目（deepseek 助手）不进"别人"', () => {
   const g = buildSocialGraph({
     affinity: {
-      '9001': { score: 32, name: '主人的deepseek助手' },
-      '9002': { score: 40, name: '主人的DeepSeek助手' },
-      '9003': { score: 20, name: '群友B' }
+      '9001': { score: 32, name: '只帆船的deepseek助手' },
+      '9002': { score: 40, name: '只帆船的DeepSeek助手' },
+      '9003': { score: 20, name: '徐昕宇' }
     },
-    selfName: '主人的deep seek助手',
+    selfName: '只帆船的deep seek助手',
     now: NOW
   });
   assert.deepEqual(g.nodes.map((n) => n.uid), ['9003']);
@@ -144,16 +144,16 @@ ok('时间流拨到未来，久没聊的人先暗下去', () => {
 
 // ── 隐私 ────────────────────────────────────────────────────────────────
 ok('QQ 号默认打码', () => {
-  assert.equal(maskUid('10000001'), '2524****12');
+  assert.equal(maskUid('2524034412'), '2524****12');
   assert.equal(maskUid('123'), '1**');
   assert.equal(maskUid(''), '未知');
 });
 
 ok('返回对象里没有整份 state 字段', () => {
   const g = buildSocialGraph({
-    affinity: { '10000001': { score: 90, love: 40, lastAt: NOW }, '1234': { score: 30, lastAt: NOW } },
+    affinity: { '2524034412': { score: 90, love: 40, lastAt: NOW }, '1234': { score: 30, lastAt: NOW } },
     impressions: { '1234': { text: '话少', sentiment: '中性', traits: ['话少'] } },
-    ownerQQ: '10000001',
+    ownerQQ: '2524034412',
     now: NOW
   });
   const json = JSON.stringify(g);
