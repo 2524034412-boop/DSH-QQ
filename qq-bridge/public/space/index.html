@@ -1,0 +1,2106 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>她的家</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{color-scheme:light;
+    --ink:#5b4636;--ink2:#9a8470;--glass:rgba(255,248,240,.68);--glass2:rgba(255,255,255,.55);
+    --line:rgba(190,150,120,.28);--acc:#ff9eb5;--acc2:#ffb86b;--on:rgba(255,158,181,.28);
+    --shadow:0 8px 28px -10px rgba(120,80,50,.35);--ease:cubic-bezier(.22,1,.36,1)}
+  body.night{color-scheme:dark;
+    --ink:#e9e4ff;--ink2:#9aa3cf;--glass:rgba(28,31,58,.62);--glass2:rgba(60,66,110,.4);
+    --line:rgba(150,160,230,.25);--acc:#b79cff;--acc2:#ffcf8a;--on:rgba(183,156,255,.28);
+    --shadow:0 8px 28px -10px rgba(0,0,20,.6)}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;
+    background:linear-gradient(#a9d8ff,#ffeede);
+    font:13px/1.6 "HarmonyOS Sans SC","MiSans","PingFang SC","Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);
+    transition:color .6s}
+  #app{position:fixed;inset:0;opacity:0;transition:opacity 1.2s var(--ease)}
+  #app.in{opacity:1}
+  canvas{display:block;cursor:grab}canvas:active{cursor:grabbing}
+  .panel{background:var(--glass);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);
+    backdrop-filter:blur(14px) saturate(1.25);-webkit-backdrop-filter:blur(14px) saturate(1.25);
+    transition:background .6s,border-color .6s}
+  .hud{position:fixed;left:18px;top:16px;pointer-events:none;padding:10px 16px 10px 14px;display:flex;gap:11px;align-items:center;
+    animation:rise .8s var(--ease) both}
+  .hud .pulse{width:10px;height:10px;border-radius:50%;background:#6fd6a0;flex:none;box-shadow:0 0 0 0 rgba(111,214,160,.6);animation:ping 2.6s ease-out infinite}
+  .hud .now{font-size:16px;font-weight:700;letter-spacing:.06em;line-height:1.25}
+  .hud .sub{color:var(--ink2);font-size:12px}
+  .hud .sub b{color:var(--ink);font-weight:600}
+  .floors{position:fixed;left:0;right:0;margin:0 auto;width:max-content;top:14px;display:flex;padding:4px;border-radius:999px;
+    animation:rise .8s .08s var(--ease) both}
+  #sky{position:fixed;inset:0;pointer-events:none;background:linear-gradient(#7fc3ff,#d9f1ff)}
+  #stars{position:fixed;inset:0 0 38% 0;opacity:0;pointer-events:none}
+  #stars .tw{position:absolute;inset:0;animation:tw 4.5s ease-in-out infinite alternate;background-image:radial-gradient(1.6px 1.6px at 8% 18%,#fff,transparent),radial-gradient(1.2px 1.2px at 17% 42%,#fff,transparent),radial-gradient(1.8px 1.8px at 29% 12%,#ffe9b8,transparent),radial-gradient(1.2px 1.2px at 41% 33%,#fff,transparent),radial-gradient(1.6px 1.6px at 53% 9%,#fff,transparent),radial-gradient(1.2px 1.2px at 64% 28%,#cfe0ff,transparent),radial-gradient(1.8px 1.8px at 76% 15%,#fff,transparent),radial-gradient(1.2px 1.2px at 86% 38%,#fff,transparent),radial-gradient(1.6px 1.6px at 93% 11%,#ffe9b8,transparent),radial-gradient(1.2px 1.2px at 35% 52%,#fff,transparent),radial-gradient(1.2px 1.2px at 70% 50%,#fff,transparent)}
+  #dof{position:fixed;inset:0;pointer-events:none;opacity:0;backdrop-filter:blur(7px) saturate(1.06);-webkit-backdrop-filter:blur(7px) saturate(1.06);
+    -webkit-mask-image:radial-gradient(ellipse 30% 46% at 50% 54%,transparent 58%,#000 100%);mask-image:radial-gradient(ellipse 30% 46% at 50% 54%,transparent 58%,#000 100%)}
+  .clock{margin-left:6px;padding-left:14px;border-left:1px solid var(--line);text-align:center;line-height:1.2}
+  #cT{font-size:20px;font-weight:700;letter-spacing:.04em;font-variant-numeric:tabular-nums}
+  #cP{font-size:11.5px;color:var(--ink2)}
+  @keyframes tw{from{opacity:.55}to{opacity:1}}
+  .floors .slider{position:absolute;top:4px;bottom:4px;left:0;width:0;border-radius:999px;pointer-events:none;
+    background:linear-gradient(120deg,var(--acc),var(--acc2));opacity:.9;transition:transform .5s var(--ease),width .5s var(--ease)}
+  .floors button{position:relative;background:transparent;border:0;color:var(--ink2);font:inherit;font-size:13px;font-weight:600;
+    padding:5px 18px;border-radius:999px;cursor:pointer;transition:color .3s}
+  .floors button:hover{color:var(--ink)}
+  .floors button.on{color:#fff;text-shadow:0 1px 2px rgba(120,60,60,.35)}
+  .floors button.dot::after{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:#6fd6a0;margin-left:6px;vertical-align:middle;box-shadow:0 0 0 2px rgba(255,255,255,.55)}
+  .warn{position:fixed;left:50%;top:62px;transform:translateX(-50%);background:rgba(255,222,226,.92);
+    border:1px solid rgba(255,140,160,.5);color:#a43b52;padding:6px 14px;border-radius:12px;font-size:12px;display:none;
+    box-shadow:var(--shadow)}
+  .bar{position:fixed;left:18px;bottom:16px;display:flex;gap:8px;padding:6px;border-radius:16px;animation:rise .8s .16s var(--ease) both}
+  .bar button{background:transparent;border:0;color:var(--ink);border-radius:11px;padding:6px 12px;font:inherit;font-size:12.5px;
+    font-weight:600;cursor:pointer;transition:background .25s,transform .25s var(--ease)}
+  .bar button:hover{background:var(--on);transform:translateY(-1px)}
+  .bar button:active{transform:scale(.94)}
+  .bar button.quiet{color:var(--ink2);font-weight:400}
+  .tip{position:fixed;right:18px;bottom:16px;font-size:11.5px;color:var(--ink2);padding:6px 12px;border-radius:12px;
+    animation:rise .8s .24s var(--ease) both;pointer-events:none}
+  #dbg{display:none;position:fixed;right:16px;top:64px;max-width:360px;background:rgba(20,16,30,.88);border:1px solid rgba(180,160,255,.3);
+    color:#d7ccff;font:11.5px/1.6 monospace;padding:10px 12px;border-radius:12px;white-space:pre-wrap;z-index:99}
+  @keyframes rise{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+  @keyframes ping{0%{box-shadow:0 0 0 0 rgba(111,214,160,.55)}70%,100%{box-shadow:0 0 0 9px rgba(111,214,160,0)}}
+  @media (max-width:720px){.tip{display:none}.floors{top:70px}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}#app{opacity:1}}
+</style></head><body>
+<div id="sky"></div>
+<div id="stars"><div class="tw"></div></div>
+<div id="app"></div>
+<div id="dof"></div>
+<div class="hud panel">
+  <div class="pulse"></div>
+  <div>
+    <div class="now" id="hPlace">—</div>
+    <div class="sub"><b id="hFloor">—</b> · <b id="hDoing">—</b></div>
+  </div>
+  <div class="clock"><div id="cT">--:--</div><div id="cP"></div></div>
+</div>
+<div class="floors panel" id="floors"></div>
+<div class="warn" id="warn"></div>
+<div id="dbg"></div>
+<div class="bar panel"><button id="bFace" title="快捷键 F">🔍 看她</button><button id="bReset">🏠 全景</button><button id="bMood">🕒 实时</button><button id="bReload" class="quiet">重新读取</button><button id="bDbg" class="quiet">诊断</button></div>
+<div class="tip panel">拖动旋转 · 滚轮缩放 · 点房间聚焦 · F 看她 · T 换时间 · 1-4 切视角</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "/media/space/three.module.min.js",
+    "@pixiv/three-vrm": "/media/space/vendor/three-vrm.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from '/media/space/vendor/loaders/GLTFLoader.js';
+import { RoomEnvironment } from '/media/space/vendor/environments/RoomEnvironment.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { createMotion } from '/media/space/motion.js';
+
+// 抓日志：贴图加载失败只在 console 里说一句，看不见就永远在猜。
+var LOGS = [];
+(function hookLog(){
+  ['warn', 'error'].forEach(function (lv){
+    var orig = console[lv].bind(console);
+    console[lv] = function (){
+      try {
+        var s = Array.prototype.map.call(arguments, function (a){
+          if (typeof a === 'string') return a;
+          try { return a && a.message ? a.message : JSON.stringify(a); } catch (e){ return String(a); }
+        }).join(' ');
+        LOGS.push(lv + ': ' + s.slice(0, 200));
+        if (LOGS.length > 12) LOGS.shift();
+      } catch (e) {}
+      orig.apply(console, arguments);
+    };
+  });
+  addEventListener('error', function (e){ LOGS.push('✗ ' + (e.message || '脚本错误')); });
+  addEventListener('unhandledrejection', function (e){
+    var r = e && e.reason;
+    LOGS.push('✗ promise: ' + ((r && (r.message || r)) + '').slice(0, 180));
+  });
+})();
+
+var TOKEN = new URLSearchParams(location.search).get('token') || '';
+var PARAMS = new URLSearchParams(location.search);
+var warnEl = document.getElementById('warn');
+var hPlace = document.getElementById('hPlace');
+var hFloor = document.getElementById('hFloor');
+var hDoing = document.getElementById('hDoing');
+function warn(msg){ warnEl.textContent = msg || ''; warnEl.style.display = msg ? 'block' : 'none'; }
+
+// 诊断面板：点左下角「诊断」按钮，或地址加 &debug=1
+var dbgEl = document.getElementById('dbg');
+function dbg(text){
+  if (dbgEl && text) dbgEl.textContent = text;
+}
+function dbgToggle(){
+  if (!dbgEl) return;
+  var on = dbgEl.style.display === 'block';
+  dbgEl.style.display = on ? 'none' : 'block';
+  if (!on && !dbgEl.textContent) dbgEl.textContent = '（等模型加载完再看）';
+}
+if (PARAMS.get('debug') === '1' && dbgEl) dbgEl.style.display = 'block';
+
+// 虚化层彻底关掉：镜头已经真的站到她面前，不需要再靠 CSS 模糊做景深
+(function (){ var d = document.getElementById('dof'); if (d) d.style.display = 'none'; })();
+
+// ── 渲染器与相机 ────────────────────────────────────────────────────
+var app = document.getElementById('app');
+var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio || 1));
+app.appendChild(renderer.domElement);
+
+var scene = new THREE.Scene();
+var camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -100, 200);
+// 「看她」专用的透视镜头。正交相机把视野缩小，看着像把一张照片放大（没有近大远小）；
+// 换成真透视、真站在她面前 0.6 米，才有"她就在你眼前"的立体感。42° 是接近人眼的自然视角。
+var camP = new THREE.PerspectiveCamera(42, 1, 0.02, 400);
+var activeCam = camera;
+var faceDist = 2.2;                // 推近用，会平滑收到 faceZoom
+var faceZoom = 0.72;               // 贴脸时她离镜头多远（滚轮可调 0.35~1.8）
+var viewSpan = 16;                 // 正交视野宽度（世界单位），随楼层大小自适应
+var lookAt = new THREE.Vector3(0, 0.6, 0);
+// 轨道状态：不要每帧从 camera.position 反算角度，否则到了上下限会"卡住"，而且有累积误差。
+var orbit = { theta: Math.PI / 4, phi: 0.62, radius: 22, target: new THREE.Vector3(0, 0.6, 0) };
+var PHI_MIN = 0.12, PHI_MAX = 1.42;   // 0=水平看，π/2=俯视
+
+function applyOrbit(){
+  orbit.target.copy(lookAt);
+  var r = orbit.radius;
+  camera.position.set(
+    orbit.target.x + Math.cos(orbit.theta) * r * Math.cos(orbit.phi),
+    orbit.target.y + Math.sin(orbit.phi) * r,
+    orbit.target.z + Math.sin(orbit.theta) * r * Math.cos(orbit.phi)
+  );
+  camera.lookAt(orbit.target);
+}
+
+// ── 视角运镜：全景 ⇄ 她面前 ─────────────────────────────────────────
+// 正交相机没有"距离"，放大靠 viewSpan；所以运镜要同时插值 角度 + 视野宽度 + 注视点。
+var camTween = null;
+var faceMode = false;
+var lastShadow = 0;        // 阴影节流时间戳
+var lastOrbitDrag = 0;     // 用户手动转镜头的时间戳（自动对脸要避开它）
+var lastRenderAt = 0;      // 渲染节流时间戳（上限 ~65fps）
+var blinkWait = 1.6, blinkPhase = -1;   // 眨眼状态机（-1 = 睁着等下一次）
+var faceBaseSpan = 2.4;     // 贴脸时的基准视野，慢推以它为起点
+
+function startTween(to, dur){
+  camTween = {
+    t: 0,
+    dur: dur || 1.5,
+    from: { theta: orbit.theta, phi: orbit.phi, radius: orbit.radius, span: viewSpan, x: lookAt.x, y: lookAt.y, z: lookAt.z },
+    to: to
+  };
+}
+
+// 世界坐标：一楼在地面，二楼抬高 FH；花园是房子正前方（+z）的院子，房后（-z）是沙滩和大海。
+var FH = 2.3, GOFF = { x: 1, z: 12.4 };
+function wpos(r){
+  var out = r.floor === 'out';
+  return { x: r.x + (out ? GOFF.x : 0), y: r.floor === '2f' ? FH : 0, z: r.z + (out ? GOFF.z : 0) };
+}
+function viewRooms(id){ return id === 'all' ? DATA.rooms : DATA.rooms.filter(function (r){ return r.floor === id; }); }
+function floorBounds(id){
+  var rooms = viewRooms(id);
+  if (!rooms.length) return null;
+  var a = 1e9, b = -1e9, c = 1e9, d = -1e9;
+  rooms.forEach(function (r){
+    var p = wpos(r);
+    a = Math.min(a, p.x - r.w / 2); b = Math.max(b, p.x + r.w / 2);
+    c = Math.min(c, p.z - r.d / 2); d = Math.max(d, p.z + r.d / 2);
+  });
+  return { cx: (a + b) / 2, cz: (c + d) / 2, span: Math.max(b - a, d - c), y: id === '2f' ? FH : 0, x0: a, x1: b, z0: c, z1: d };
+}
+
+// 看她时到底框到哪：镜头直接怼到脸前，只框「脸 + 肩」。
+// 因为摄像机离得近、视野又窄，二楼和远处的家具自然就出画了 —— 不需要藏，也不需要虚化。
+var _fTop = new THREE.Vector3(), _fBot = new THREE.Vector3();
+function herFrame(){
+  var headY = 1.39, hipY = 0.91;
+  try {
+    if (idle.ok && idle.head && idle.hips){
+      idle.head.getWorldPosition(_fTop);
+      idle.hips.getWorldPosition(_fBot);
+      if (isFinite(_fTop.y) && isFinite(_fBot.y) && _fTop.y > _fBot.y){
+        headY = _fTop.y; hipY = _fBot.y;
+      }
+    }
+  } catch (e) {}
+  var h = Math.max(0.32, headY - hipY);
+  // 体格越矮（坐着）视野越小；0.48 的头髋差 → 约 0.55 的取景，正好脸+肩
+  return { y: headY + 0.04, span: Math.max(0.44, h * 1.18) };
+}
+
+function focusOnHer(dur){
+  // 贴脸模式用的是透视镜头 camP（在 frame() 里逐帧驱动），这里只做状态切换：
+  // 不启动正交运镜（那会把画面切成"放大图"），改成从 2.2 米平滑推到 faceZoom。
+  camTween = null;
+  faceDist = 2.2;
+  faceZoom = 0.72;
+  // 镜头仍然由 orbit 控制（拖动 = 绕她转，滚轮 = 拉近拉远）。
+  // 起始角度取她的正前方，phi 压到接近水平。
+  orbit.theta = Math.PI / 2 + (avatar.rotation.y || 0);
+  orbit.phi = 0.05;
+  lastOrbitDrag = 0;                 // 允许它自动绕回正脸
+  // 镜头就在她面前、房间里面 —— 墙不再挡视线，所以不需要淡墙，
+  // 让她背后是一面实墙当背景，比半透明看到海干净得多。
+  setWallsFaded(false);
+  // 先把 camP 摆到位，避免第一帧从上一个位置"闪"一下
+  try {
+    var hw = new THREE.Vector3();
+    (idle.head || avatar).getWorldPosition(hw);
+    var fr = herFrame();
+    var cp0 = Math.cos(orbit.phi), sp0 = Math.sin(orbit.phi);
+    camP.position.set(
+      hw.x + Math.cos(orbit.theta) * 2.2 * cp0,
+      fr.y + sp0 * 2.2,
+      hw.z + Math.sin(orbit.theta) * 2.2 * cp0
+    );
+    camP.lookAt(hw.x, fr.y - 0.035, hw.z);
+    camP.updateMatrixWorld();
+    activeCam = camP;
+  } catch (e) {}
+}
+
+function focusOverview(dur){ focusFloor(floorId, true, dur); }
+
+// 把矮墙淡成半透明：贴脸时镜头在屋内，墙在相机背后/旁边，不该挡视线
+function setWallsFaded(fade, op){
+  // op 可以不传：默认 0.14（远景切楼层用），贴脸时给 0.42 —— 留一层墙当背景，
+  // 既不会隔着墙看她，也不至于把整面墙看穿、直接看到海。
+  var a = op === undefined ? 0.14 : op;
+  group.traverse(function (o){
+    if (!o.isMesh || !o.userData.isWall || !o.material) return;
+    o.material.transparent = fade;
+    o.material.opacity = fade ? a : 1;
+    o.material.depthWrite = !fade;
+    o.material.needsUpdate = true;
+  });
+}
+
+function toggleView(){
+  faceMode = !faceMode;
+  var b = document.getElementById('bFace');
+  if (b) b.textContent = faceMode ? '🏠 回全景' : '🔍 看她';
+  if (faceMode) focusOnHer(); else focusOverview();
+}
+
+// ── 灯光：暖色日光 + 柔阴影；时间跟随电脑时钟，游戏式连续昼夜 ───────────
+var LIGHT_BOOST = Number(PARAMS.get('light') || 1);   // ?light=0.5 调暗，?light=2 调亮
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// 阴影是这套场景最贵的一笔开销：2048² + PCFSoft + 几乎每个网格都投影，
+// 而太阳只在 applyTime 里动、她也只在慢慢走动 —— 每帧重算 60 次里有 59 次白算。
+// 改成手动更新，最多 10 次/秒（具体在 frame() 里节流）。
+renderer.shadowMap.autoUpdate = false;
+var amb = new THREE.HemisphereLight(0xfff4e6, 0xd9c2a6, 0.8 * LIGHT_BOOST);
+scene.add(amb);
+var sun = new THREE.DirectionalLight(0xfff0d6, 1.3 * LIGHT_BOOST);
+sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024); sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.03; sun.shadow.radius = 1;
+scene.add(sun); scene.add(sun.target);
+var rim = new THREE.DirectionalLight(0xbcd4ff, 0.3);
+// 三个灯的「正常曝光」基准值（applyTime 每帧记一次，frame() 贴脸时按比例压暗）
+var SUN_I = 1.3, AMB_I = 0.8, RIM_I = 0.3;
+rim.position.set(-10, 8, -9); scene.add(rim);
+
+// 程序化室内环境，不用下载 HDRI。
+var pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
+// PMREM 要预过滤一整张立方图（几十毫秒到上百毫秒），放在首帧之后再做：
+// 页面能先出现，不至于白屏等环境贴图。
+setTimeout(function (){
+  try { scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture; } catch (e) {}
+}, 80);
+
+var SUND = new THREE.Vector3(-0.3, 0.8, 0.5);
+var lastUK = 1;
+sun.shadow.camera.left = -26; sun.shadow.camera.right = 26; sun.shadow.camera.top = 26; sun.shadow.camera.bottom = -26; sun.shadow.camera.near = 1; sun.shadow.camera.far = 110; sun.shadow.camera.updateProjectionMatrix();
+var SEA = null;
+
+// 夜里的灯：只留 6 盏真实点光，跟着镜头焦点换到最近的灯（数量恒定，不会重编译着色器）；
+// 其余的灯只靠自发光 + 光晕，一样好看、几乎不花算力。
+var POOL = [], LAMPC = [], POOL_T = 0;
+(function (){
+  for (var i = 0; i < 6; i++){
+    var pl = new THREE.PointLight(0xffc27a, 0, 6, 2); scene.add(pl);
+    POOL.push({ l: pl, cand: null, want: null, k: 0 });
+  }
+})();
+var GLOW_MAT = (function (){
+  var c = document.createElement('canvas'); c.width = c.height = 64;
+  var g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255,214,150,.95)'); gr.addColorStop(0.35, 'rgba(255,190,110,.35)'); gr.addColorStop(1, 'rgba(255,170,90,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  var t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.SpriteMaterial({ map: t, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+})();
+
+// ── 时间：真实时钟。关键帧（时, 天顶色, 地平色, 环境光, 强度, 日/月光, 强度, 夜晚程度）──
+var KF = [
+  [0,   '#0b1030', '#26306a', '#7f8cff', 0.36, '#8fa6ff', 0.42, 1],
+  [5,   '#0f1538', '#34407f', '#8794ff', 0.38, '#97abff', 0.45, 1],
+  [6.3, '#6a7fc0', '#ffb59a', '#ffc9b0', 0.6,  '#ffb88a', 0.8,  0.5],
+  [8,   '#7fc3ff', '#ffe9d0', '#fff1e2', 0.78, '#fff0d6', 1.2,  0],
+  [12,  '#6ab8ff', '#d9f1ff', '#fff4e6', 0.8,  '#fff4e0', 1.35, 0],
+  [16.3,'#79bfff', '#ffeccb', '#fff0dc', 0.78, '#ffe2b8', 1.25, 0],
+  [18,  '#8a7fd0', '#ffad7a', '#ffd0b0', 0.62, '#ffa86b', 0.85, 0.3],
+  [19.2,'#3d3d86', '#d27a9a', '#a99be0', 0.46, '#b49bd8', 0.55, 0.8],
+  [20.5,'#171c4a', '#3d4584', '#8290ff', 0.38, '#92a6ff', 0.45, 1],
+  [24,  '#0b1030', '#26306a', '#7f8cff', 0.36, '#8fa6ff', 0.42, 1]
+].map(function (k){
+  return { h: k[0], top: new THREE.Color(k[1]), bot: new THREE.Color(k[2]), amb: new THREE.Color(k[3]), ai: k[4], sun: new THREE.Color(k[5]), si: k[6], n: k[7] };
+});
+var CUR = { top: new THREE.Color(), bot: new THREE.Color(), amb: new THREE.Color(), sun: new THREE.Color(), ai: 1, si: 1, n: 0 };
+var TM = { mode: 'auto', fixed: 12, cur: 12, n: 0, last: -1 };
+var TIME_MODES = ['auto', 'day', 'dusk', 'night'];
+var TIME_LABEL = { auto: '🕒 实时', day: '☀️ 白天', dusk: '🌇 黄昏', night: '🌙 夜晚', fixed: '🕒 指定' };
+function clockHour(){ var d = new Date(); return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600; }
+function modeHour(){
+  if (TM.mode === 'day') return 12;
+  if (TM.mode === 'dusk') return 18.2;
+  if (TM.mode === 'night') return 23;
+  if (TM.mode === 'fixed') return TM.fixed;
+  return clockHour();
+}
+(function (){
+  var q = PARAMS.get('time');
+  if (q === 'day' || q === 'dusk' || q === 'night') TM.mode = q;
+  else if (q && /^\d{1,2}(:\d{2})?$/.test(q)){ var p = q.split(':'); TM.mode = 'fixed'; TM.fixed = Number(p[0]) + Number(p[1] || 0) / 60; }
+  TM.cur = modeHour();
+})();
+
+function kfAt(h){
+  h = ((h % 24) + 24) % 24;
+  var i = 0; while (i < KF.length - 2 && h >= KF[i + 1].h) i++;
+  var a = KF[i], b = KF[i + 1], t = (h - a.h) / (b.h - a.h); t = t * t * (3 - 2 * t);
+  CUR.top.copy(a.top).lerp(b.top, t); CUR.bot.copy(a.bot).lerp(b.bot, t);
+  CUR.amb.copy(a.amb).lerp(b.amb, t); CUR.sun.copy(a.sun).lerp(b.sun, t);
+  CUR.ai = a.ai + (b.ai - a.ai) * t; CUR.si = a.si + (b.si - a.si) * t; CUR.n = a.n + (b.n - a.n) * t;
+}
+var PHASES = [[0, 5, '深夜', '🌙'], [5, 7, '清晨', '🌅'], [7, 11, '上午', '☀️'], [11, 14, '正午', '☀️'], [14, 17, '下午', '🌤️'], [17, 19.5, '傍晚', '🌇'], [19.5, 24, '夜晚', '🌙']];
+var _w = new THREE.Color(0xffffff), _nt = new THREE.Color(0x5a6aa8), _tmp = new THREE.Color();
+function applyTime(h){
+  kfAt(h);
+  var n = CUR.n; TM.n = n;
+  amb.color.copy(CUR.amb); amb.groundColor.copy(CUR.amb).multiplyScalar(0.75); amb.intensity = CUR.ai * LIGHT_BOOST;
+  sun.color.copy(CUR.sun); sun.intensity = CUR.si * LIGHT_BOOST;
+  // 记下「正常曝光」的基准亮度，贴脸时按比例压下去（见 frame() 里的 fk）
+  SUN_I = sun.intensity; AMB_I = amb.intensity; RIM_I = 0.3 + 0.25 * n;
+  var a = ((h - 6) / 12) * Math.PI;                       // 日 / 月在同一条弧上走
+  sun.target.position.set(7, 0, 8); sun.position.copy(SUND).multiplyScalar(45).add(sun.target.position); sun.target.updateMatrixWorld();
+  rim.intensity = 0.3 + 0.25 * n;
+  var env = 0.55 * (1 - 0.7 * n);
+  for (var i = 0; i < ALL_MATS.length; i++){ var m = ALL_MATS[i]; if ('envMapIntensity' in m) m.envMapIntensity = env; }
+  M.bulb.emissiveIntensity = 0.12 + n * 2.6;
+  M.glass.emissive.set(0xffd9a0); M.glass.emissiveIntensity = n * 0.28;
+  GLOW_MAT.opacity = n * 0.7;
+  if (SEA){
+    _tmp.copy(_w).lerp(CUR.sun, 0.28).lerp(_nt, n * 0.72);
+    SEA.main.color.copy(_tmp); SEA.wave.color.copy(_tmp);
+    SEA.wave.opacity = 0.42 - 0.18 * n;
+    SEA.spark.opacity = 0.32 * (1 - n) * Math.min(1, CUR.si / 1.2) + 0.12 * n;
+    SEA.spark.color.copy(n > 0.5 ? new THREE.Color(0xcfe0ff) : _w);
+  }
+  var sky = document.getElementById('sky');
+  if (sky){ sky.style.background = 'linear-gradient(' + CUR.top.getStyle() + ',' + CUR.bot.getStyle() + ')'; sky.style.opacity = 1; }
+  var st = document.getElementById('stars'); if (st) st.style.opacity = Math.max(0, n * 1.2 - 0.2);
+  document.body.classList.toggle('night', n > 0.55);
+  // 时钟
+  var mins = Math.floor(((h % 24) + 24) % 24 * 60);
+  if (mins !== TM.last){
+    TM.last = mins;
+    var hh = Math.floor(mins / 60), mm = mins % 60, ph = PHASES[0];
+    for (var k = 0; k < PHASES.length; k++) if (hh >= PHASES[k][0] && hh < PHASES[k][1]) ph = PHASES[k];
+    var orb = document.getElementById('orb');
+    if (orb){
+      var isDay = hh >= 6 && hh < 18, u = isDay ? (h - 6) / 12 : (((h - 18) % 24 + 24) % 24) / 12;
+      orb.className = isDay ? 'sun' : 'moon';
+      orb.style.left = (6 + u * 88) + '%'; orb.style.top = (58 - Math.sin(u * Math.PI) * 44) + '%';
+    }
+    var cT = document.getElementById('cT'), cP = document.getElementById('cP');
+    if (cT) cT.textContent = ('0' + hh).slice(-2) + ':' + ('0' + mm).slice(-2);
+    if (cP) cP.textContent = ph[3] + ' ' + ph[2];
+  }
+}
+function timeStep(dt){
+  var target = modeHour();
+  var diff = ((target - TM.cur + 36) % 24) - 12;
+  if (Math.abs(diff) > 0.004) TM.cur = (TM.cur + diff * (TM.mode === 'auto' && Math.abs(diff) < 0.05 ? 1 : 1 - Math.exp(-3.5 * dt)) + 24) % 24;
+  else TM.cur = target;
+  TM.acc = (TM.acc || 0) + dt;
+  if (Math.abs(diff) > 0.0004 || TM.acc > 1 || TM.last < 0){ TM.acc = 0; applyTime(TM.cur); }
+}
+function poolUpdate(dt, t){
+  POOL_T += dt;
+  if (POOL_T > 0.4 && LAMPC.length){
+    POOL_T = 0;
+    var f = faceMode ? avatar.position : lookAt;
+    var sorted = LAMPC.slice().sort(function (a, b){ return a.p.distanceToSquared(f) - b.p.distanceToSquared(f); });
+    var top = sorted.slice(0, POOL.length), taken = {};
+    POOL.forEach(function (s){ var ix = top.indexOf(s.cand); s.want = ix >= 0 ? s.cand : null; if (ix >= 0) taken[ix] = 1; });
+    var free = top.filter(function (c, i){ return !taken[i]; });
+    POOL.forEach(function (s){ if (!s.want && free.length) s.want = free.shift(); });
+  }
+  POOL.forEach(function (s, i){
+    if (s.cand !== s.want){
+      s.k = Math.max(0, s.k - dt * 5);
+      if (s.k === 0){ s.cand = s.want; if (s.cand) s.l.position.copy(s.cand.p); }
+    } else s.k = Math.min(1, s.k + dt * 4);
+    s.l.intensity = s.cand ? s.cand.base * TM.n * s.k * (1 + Math.sin(t * 2.7 + i * 1.9) * 0.025) : 0;
+  });
+}
+function resize(){
+  var w = innerWidth, h = innerHeight, aspect = w / h;
+  var span = viewSpan;
+  camera.left = -span * aspect / 2; camera.right = span * aspect / 2;
+  camera.top = span / 2; camera.bottom = -span / 2;
+  camera.updateProjectionMatrix();
+  camP.aspect = aspect; camP.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+addEventListener('resize', resize);
+
+// ── 数据 ────────────────────────────────────────────────────────────
+var DATA = { floors: [], rooms: [], scenery: {}, outside: { label: '外面', floor: 'out', x: 0, z: 6 } };
+var floorId = 'all';
+var autoFollow = true;
+var roomIndex = new Map();          // label / alias → room
+var group = new THREE.Group();      // 当前楼层的一切
+scene.add(group);
+
+// ── 材质：全部程序化生成（零下载、零版权），柔和粉彩 + 轻纹理 ───────────
+var ALL_MATS = [];
+var LAMPS = [], SWAY = [], BFLY = [], WAVES = [], PICKS = [];
+function reg(m){ ALL_MATS.push(m); return m; }
+function std(color, o){
+  return reg(new THREE.MeshStandardMaterial(Object.assign({ color: color, roughness: 0.82, metalness: 0, envMapIntensity: 0.55 }, o || {})));
+}
+function rnd(seed){ return function (){ seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; }; }
+
+var TEXC = {};
+function canvasTex(kind, a, b, rx, ry){
+  var key = kind + a + b, base = TEXC[key];
+  if (!base){
+    var S = 256, c = document.createElement('canvas'); c.width = c.height = S;
+    var g = c.getContext('2d'), R = rnd(13 + kind.length * 7 + a.length), i, k;
+    g.fillStyle = a; g.fillRect(0, 0, S, S);
+    if (kind === 'wood'){
+      var h = S / 4;
+      for (i = 0; i < 4; i++){
+        g.globalAlpha = 1; g.fillStyle = 'rgba(0,0,0,' + (R() * 0.07) + ')'; g.fillRect(0, i * h, S, h);
+        g.fillStyle = 'rgba(255,255,255,' + (R() * 0.06) + ')'; g.fillRect(0, i * h, S, h / 2);
+        for (k = 0; k < 14; k++){
+          g.strokeStyle = R() < 0.5 ? b : '#fff'; g.globalAlpha = 0.06 + R() * 0.08; g.lineWidth = 1 + R() * 1.6;
+          var y = i * h + R() * h; g.beginPath(); g.moveTo(0, y);
+          g.bezierCurveTo(S * 0.3, y + R() * 6 - 3, S * 0.6, y + R() * 6 - 3, S, y + R() * 4 - 2); g.stroke();
+        }
+        g.globalAlpha = 0.45; g.fillStyle = b; g.fillRect(0, i * h, S, 2);
+        g.globalAlpha = 0.3; g.fillRect((R() * S) | 0, i * h, 2, h);
+      }
+    } else if (kind === 'tile'){
+      var t = S / 4;
+      for (i = 0; i < 4; i++) for (k = 0; k < 4; k++){
+        g.fillStyle = (i + k) % 2 ? b : a; g.fillRect(i * t, k * t, t, t);
+        g.fillStyle = 'rgba(255,255,255,.18)'; g.fillRect(i * t + 3, k * t + 3, t * 0.45, 3);
+      }
+      g.fillStyle = 'rgba(120,100,80,.35)';
+      for (i = 0; i < 4; i++){ g.fillRect(i * t, 0, 2, S); g.fillRect(0, i * t, S, 2); }
+    } else if (kind === 'grass'){
+      for (i = 0; i < 2600; i++){
+        g.strokeStyle = [a, b, '#a4dc8c', '#5aa05a'][i % 4]; g.globalAlpha = 0.35 + R() * 0.4; g.lineWidth = 1.4;
+        var x = R() * S, yy = R() * S; g.beginPath(); g.moveTo(x, yy); g.lineTo(x + R() * 4 - 2, yy - 3 - R() * 5); g.stroke();
+      }
+    } else if (kind === 'cloth'){
+      g.strokeStyle = b; g.globalAlpha = 0.12; g.lineWidth = 2;
+      for (i = 0; i < S; i += 6){ g.beginPath(); g.moveTo(i, 0); g.lineTo(i, S); g.stroke(); g.beginPath(); g.moveTo(0, i); g.lineTo(S, i); g.stroke(); }
+    } else if (kind === 'stone'){
+      for (i = 0; i < 40; i++){ g.globalAlpha = 0.07; g.fillStyle = R() < 0.5 ? b : '#fff'; g.beginPath(); g.arc(R() * S, R() * S, 8 + R() * 22, 0, 6.3); g.fill(); }
+    } else if (kind === 'water'){
+      g.globalAlpha = 1; g.fillStyle = a; g.fillRect(0, 0, S, S);
+      for (i = 0; i < 26; i++){
+        g.strokeStyle = b; g.globalAlpha = 0.25 + R() * 0.3; g.lineWidth = 1.5 + R() * 1.5;
+        var wy = R() * S, wx = R() * S; g.beginPath(); g.moveTo(wx - 24, wy); g.quadraticCurveTo(wx, wy - 6, wx + 24, wy); g.stroke();
+      }
+    } else { // plaster：只给轻微噪点，别花纹
+      for (i = 0; i < 1600; i++){ g.globalAlpha = 0.035; g.fillStyle = R() < 0.5 ? '#fff' : b; g.fillRect(R() * S, R() * S, 2, 2); }
+    }
+    g.globalAlpha = 1;
+    base = TEXC[key] = new THREE.CanvasTexture(c);
+    base.wrapS = base.wrapT = THREE.RepeatWrapping; base.colorSpace = THREE.SRGBColorSpace;
+    base.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+  }
+  var t = base.clone(); t.needsUpdate = true; t.repeat.set(rx || 1, ry || 1);
+  return t;
+}
+
+var M = {
+  cream: std(0xfff1e0), wood: std(0xb98a5e), woodL: std(0xe0b98a), woodD: std(0x8a6444),
+  sofa: std(0x9cc3e4, { roughness: 0.95 }), sofa2: std(0xb4d3ee, { roughness: 0.95 }),
+  pink: std(0xffb3c6, { roughness: 0.95 }), pinkD: std(0xf08fab, { roughness: 0.95 }), yellow: std(0xffdc8a, { roughness: 0.95 }),
+  mint: std(0xa6dcc6, { roughness: 0.95 }), blue: std(0x7fa8d8, { roughness: 0.95 }), lilac: std(0xc6b0ec, { roughness: 0.95 }),
+  white: std(0xfbf7f2, { roughness: 0.32 }), paper: std(0xfffaf0), metal: std(0xc3ccd6, { roughness: 0.3, metalness: 0.6 }),
+  steel: std(0x9aa6b4, { roughness: 0.28, metalness: 0.7 }), frame: std(0x37404c, { roughness: 0.5 }),
+  frameW: std(0xfff4e4), leaf: std(0x5fb36e), leaf2: std(0x7ccf80), terra: std(0xd98a63), soil: std(0x5b4030),
+  stone: std(0xcfc6bb, { roughness: 0.9 }), stoneD: std(0xa89f95, { roughness: 0.9 }), carton: std(0xd8b27e), tape: std(0xf1e0b6),
+  fridge: std(0xe8f1f6, { roughness: 0.3 }), cabinet: std(0xf3e1c3), top: std(0xf7f2ea, { roughness: 0.35 }),
+  rugP: std(0xffd1dc, { roughness: 1 }), rugB: std(0xbcd6ee, { roughness: 1 }), rugR: std(0xe9a09a, { roughness: 1 }),
+  curtain: std(0xffe3ea, { transparent: true, opacity: 0.62, roughness: 1, side: THREE.DoubleSide }),
+  bulb: reg(new THREE.MeshStandardMaterial({ color: 0xfff1c8, emissive: 0xffc46b, emissiveIntensity: 0.15, roughness: 0.6 })),
+  screen: reg(new THREE.MeshStandardMaterial({ color: 0x1a2740, emissive: 0x6fa8ff, emissiveIntensity: 0.55, roughness: 0.3 })),
+  mirror: std(0xdff2ff, { roughness: 0.05, metalness: 0.5 }),
+  glass: std(0xcfeaf7, { transparent: true, opacity: 0.16, depthWrite: false, roughness: 0.05 }),
+  water: std(0x6fd0e6, { transparent: true, opacity: 0.8, roughness: 0.15, map: canvasTex('water', '#6fd0e6', '#d6f6ff', 3, 2) }),
+  sea: std(0x66c5db, { roughness: 0.28 }), seaFar: std(0xa9e4f0, { transparent: true, opacity: 0.55, roughness: 1 }),
+  foam: reg(new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22 })),
+  sand: std(0xf2dcae, { roughness: 1 }), duck: std(0xffd24a), orange: std(0xff9a4a), black: std(0x2a2a33),
+  red: std(0xe56a6a), green: std(0x8fc96a), whale: std(0x7aa2e6)
+};
+var STATIC_COUNT = ALL_MATS.length;
+var BOOKC = ['#e58a8a', '#f0c27a', '#8fc1a9', '#8aa7d8', '#b79ad8', '#f2a3c0', '#f4e0a0'].map(function (c){ return std(c, { roughness: 0.9 }); });
+STATIC_COUNT = ALL_MATS.length;
+
+// ── 几何小工具 ──────────────────────────────────────────────────────
+var RB = {};
+function rgeo(w, h, d, r){
+  r = Math.max(0.004, Math.min(r, w / 2 - 0.002, h / 2 - 0.002, d / 2 - 0.002));
+  var k = [w, h, d, r].map(function (v){ return v.toFixed(3); }).join('_');
+  if (RB[k]) return RB[k];
+  var iw = w - 2 * r, ih = h - 2 * r, id = d - 2 * r;
+  var s = new THREE.Shape();
+  s.moveTo(-iw / 2, -ih / 2); s.lineTo(iw / 2, -ih / 2); s.lineTo(iw / 2, ih / 2); s.lineTo(-iw / 2, ih / 2); s.closePath();
+  var geo = new THREE.ExtrudeGeometry(s, { depth: id, bevelEnabled: true, bevelThickness: r, bevelSize: r, bevelSegments: 2, curveSegments: 1 });
+  geo.translate(0, 0, -id / 2);
+  return (RB[k] = geo);
+}
+function rb(w, h, d, mat, x, y, z, r){
+  var m = new THREE.Mesh(rgeo(w, h, d, r === undefined ? 0.025 : r), mat);
+  m.position.set(x, y, z); return m;
+}
+function box(w, h, d, mat, x, y, z){
+  var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z); return m;
+}
+function cyl(rt, rbm, h, mat, x, y, z, seg){
+  var m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rbm, h, seg || 14), mat);
+  m.position.set(x, y, z); return m;
+}
+function sph(r, mat, x, y, z, sx, sy, sz){
+  var m = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), mat);
+  m.position.set(x, y, z); m.scale.set(sx || 1, sy || 1, sz || 1); return m;
+}
+function ring(R, r, mat, x, y, z){
+  var m = new THREE.Mesh(new THREE.TorusGeometry(R, r, 8, 24), mat);
+  m.position.set(x, y, z); m.rotation.x = Math.PI / 2; return m;
+}
+
+function makeLabel(text, color, maxW){
+  var c = document.createElement('canvas'); c.width = 256; c.height = 72;
+  var g = c.getContext('2d');
+  g.fillStyle = 'rgba(255,250,244,.92)'; g.strokeStyle = color; g.lineWidth = 4;
+  g.beginPath(); if (g.roundRect) g.roundRect(4, 6, 248, 60, 30); else g.rect(4, 6, 248, 60);
+  g.fill(); g.stroke();
+  g.fillStyle = '#6b4f3e'; g.font = '700 30px "Microsoft YaHei", system-ui, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 128, 38);
+  var t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.minFilter = THREE.LinearFilter;
+  var s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, depthTest: false }));
+  var w = Math.max(1.1, Math.min(2.0, maxW * 0.5));
+  s.scale.set(w, w * 72 / 256, 1); s.renderOrder = 10;
+  return s;
+}
+
+// ── 小件 ────────────────────────────────────────────────────────────
+function lamp(g, x, y, z, inten, dist){
+  g.add(sph(0.06, M.bulb, x, y, z));
+  var gl = new THREE.Sprite(GLOW_MAT); gl.scale.set(1.15, 1.15, 1); gl.position.set(x, y, z); gl.renderOrder = 5; g.add(gl);
+  var o = new THREE.Object3D(); o.position.set(x, y, z); g.add(o);
+  LAMPC.push({ obj: o, base: (inten || 2.4) * 1.15, p: null, up: false });
+}
+function plant(g, x, z, s, pot, y0){
+  s = s || 1; y0 = y0 || 0;
+  g.add(cyl(0.13 * s, 0.1 * s, 0.2 * s, pot || M.terra, x, y0 + 0.1 * s, z, 12));
+  g.add(cyl(0.12 * s, 0.12 * s, 0.02, M.soil, x, y0 + 0.2 * s, z, 10));
+  for (var i = 0; i < 7; i++){
+    var a = i / 7 * 6.283;
+    var lf = sph(0.1 * s, i % 2 ? M.leaf : M.leaf2, x + Math.cos(a) * 0.1 * s, y0 + (0.34 + (i % 3) * 0.07) * s, z + Math.sin(a) * 0.1 * s, 1, 1.6, 0.7);
+    lf.rotation.y = -a; lf.rotation.z = 0.35; g.add(lf);
+  }
+  g.add(sph(0.12 * s, M.leaf2, x, y0 + 0.45 * s, z));
+}
+function books(g, x, y, z, n, h){
+  var cx = x;
+  for (var i = 0; i < n; i++){
+    var w = 0.035 + (i * 7 % 3) * 0.012, hh = (h || 0.26) - (i * 5 % 4) * 0.025;
+    g.add(rb(w, hh, 0.2, BOOKC[i % BOOKC.length], cx, y + hh / 2, z, 0.006)); cx += w + 0.004;
+  }
+}
+function art(g, x, y, z, w, h, col, ry){
+  var f = new THREE.Group();
+  f.add(rb(w, h, 0.04, M.frameW, 0, 0, 0, 0.012));
+  f.add(rb(w - 0.08, h - 0.08, 0.045, std(col, { roughness: 0.9 }), 0, 0, 0.004, 0.004));
+  f.add(sph(w * 0.14, M.cream, -w * 0.12, h * 0.1, 0.03, 1, 1, 0.2));
+  f.position.set(x, y, z); f.rotation.y = ry || 0; g.add(f);
+}
+function pendant(g, x, z, y, col){
+  g.add(cyl(0.008, 0.008, 1.0, M.frame, x, y + 0.5, z, 4));
+  g.add(cyl(0.05, 0.24, 0.2, std(col || 0xffe0a0, { roughness: 0.6, side: THREE.DoubleSide }), x, y, z, 16));
+  lamp(g, x, y - 0.1, z, 2.2, 5);
+}
+function flowers(g, x, z, col, n){
+  for (var i = 0; i < n; i++){
+    var a = i * 2.4, fx = x + Math.cos(a) * 0.05 * (i % 3), fz = z + Math.sin(a) * 0.05 * (i % 3);
+    g.add(cyl(0.006, 0.006, 0.2 + (i % 3) * 0.04, M.leaf, fx, 0.1 + (i % 3) * 0.02, fz, 4));
+    g.add(sph(0.04, std([col, '#ffd98a', '#ffffff'][i % 3], { roughness: 0.9 }), fx, 0.22 + (i % 3) * 0.04, fz));
+  }
+}
+function tree(g, x, z, s, crown, trunkH){
+  s = s || 1;
+  var T = new THREE.Group(); T.position.set(x, 0, z);
+  T.add(cyl(0.1 * s, 0.17 * s, (trunkH || 1.3) * s, M.woodD, 0, 0.65 * s, 0, 8));
+  var cm = std(crown || 0x6fc276, { roughness: 0.95 }), cm2 = std(crown ? crown : 0x86d58a, { roughness: 0.95 });
+  var C = new THREE.Group(); C.position.y = 1.5 * s;
+  C.add(sph(0.85 * s, cm, 0, 0, 0)); C.add(sph(0.6 * s, cm2, 0.5 * s, 0.25 * s, 0.2 * s)); C.add(sph(0.55 * s, cm2, -0.45 * s, 0.2 * s, -0.25 * s)); C.add(sph(0.5 * s, cm, 0.05 * s, 0.6 * s, -0.1 * s));
+  T.add(C); g.add(T); SWAY.push({ o: C, ph: x * 1.7 + z });
+}
+function bush(g, x, z, s, col){ g.add(sph(0.38 * s, std(col || 0x62b36a, { roughness: 1 }), x, 0.26 * s, z, 1.2, 0.8, 1)); }
+function butterflies(g, cx, cz, n){
+  for (var i = 0; i < n; i++){
+    var b = new THREE.Group(), col = std([0xffa6c9, 0xffd98a, 0xb9a6ff][i % 3], { roughness: 0.8, side: THREE.DoubleSide });
+    var w1 = new THREE.Mesh(new THREE.CircleGeometry(0.08, 8), col), w2 = w1.clone();
+    w1.position.x = -0.07; w2.position.x = 0.07; b.add(w1); b.add(w2);
+    g.add(b); BFLY.push({ o: b, w1: w1, w2: w2, cx: cx, cz: cz, r: 1.4 + i * 0.7, sp: 0.5 + i * 0.13, ph: i * 2.1 });
+  }
+}
+function circRug(g, x, z, r, mat){ var m = cyl(r, r, 0.02, mat, x, 0.011, z, 36); g.add(m); g.add(cyl(r * 0.78, r * 0.78, 0.024, M.cream, x, 0.012, z, 36)); }
+
+// ── 每间房的家具 ────────────────────────────────────────────────────
+function furniture(room){
+  var g = new THREE.Group(), i, k;
+  switch (room.id){
+    case 'living':
+      circRug(g, 0, -0.1, 1.75, M.rugP);
+      g.add(rb(3.1, 0.34, 1.0, M.sofa, 0, 0.27, -1.9, 0.07));
+      for (i = -1; i <= 1; i++) g.add(rb(0.98, 0.15, 0.82, M.sofa2, i * 1.0, 0.5, -1.82, 0.06));
+      g.add(rb(3.1, 0.62, 0.26, M.sofa, 0, 0.72, -2.4, 0.09));
+      g.add(rb(0.26, 0.5, 1.0, M.sofa, -1.42, 0.5, -1.9, 0.07)); g.add(rb(0.26, 0.5, 1.0, M.sofa, 1.42, 0.5, -1.9, 0.07));
+      var c1 = rb(0.42, 0.4, 0.14, M.pink, -0.95, 0.74, -2.2, 0.06); c1.rotation.z = 0.15; g.add(c1);
+      var c2 = rb(0.38, 0.38, 0.14, M.yellow, 0.95, 0.73, -2.2, 0.06); c2.rotation.z = -0.2; g.add(c2);
+      g.add(rb(0.9, 0.05, 0.55, M.mint, 0.3, 0.57, -1.7, 0.02));    // 搭着的小毯子
+      for (i = 0; i < 4; i++) g.add(cyl(0.03, 0.025, 0.1, M.woodD, (i % 2 ? 1 : -1) * 1.4, 0.05, -1.55 - (i < 2 ? 0 : 0.7), 6));
+      // 茶几：桌面 + 腿 + 下层
+      g.add(rb(1.25, 0.06, 0.7, M.woodL, 0, 0.38, -0.4, 0.025));
+      g.add(rb(1.1, 0.03, 0.55, M.woodD, 0, 0.14, -0.4, 0.01));
+      for (i = 0; i < 4; i++) g.add(cyl(0.025, 0.025, 0.36, M.woodD, (i % 2 ? 1 : -1) * 0.55, 0.18, -0.4 + (i < 2 ? 0.28 : -0.28), 6));
+      g.add(cyl(0.04, 0.035, 0.09, M.white, -0.35, 0.46, -0.45, 12));                       // 杯子
+      g.add(cyl(0.036, 0.036, 0.04, std(0x9fdcf2, { transparent: true, opacity: 0.7 }), -0.35, 0.45, -0.45, 12)); // 半杯水
+      g.add(rb(0.22, 0.03, 0.3, BOOKC[3], 0.2, 0.43, -0.3, 0.008)); g.add(rb(0.2, 0.03, 0.28, BOOKC[1], 0.2, 0.46, -0.3, 0.008));
+      g.add(cyl(0.05, 0.04, 0.1, M.white, 0.45, 0.46, -0.55, 10)); flowers(g, 0.45, -0.55, '#ff9db8', 4);
+      // 电视墙
+      g.add(rb(0.45, 0.42, 2.0, M.woodD, -4.45, 0.21, 0.1, 0.03));
+      g.add(rb(0.06, 0.62, 1.15, M.frame, -4.5, 0.75, 0.1, 0.015)); g.add(rb(0.02, 0.56, 1.06, M.screen, -4.47, 0.75, 0.1, 0.005));
+      g.add(rb(0.12, 0.03, 0.4, M.frame, -4.4, 0.44, 0.1, 0.01));
+      // 单椅
+      var ch = new THREE.Group(); ch.position.set(2.6, 0, -0.9); ch.rotation.y = -0.55;
+      ch.add(rb(0.78, 0.2, 0.78, M.mint, 0, 0.3, 0, 0.07)); ch.add(rb(0.78, 0.55, 0.18, M.mint, 0, 0.6, -0.33, 0.07));
+      ch.add(rb(0.12, 0.35, 0.78, M.mint, -0.38, 0.45, 0, 0.05)); ch.add(rb(0.12, 0.35, 0.78, M.mint, 0.38, 0.45, 0, 0.05));
+      for (i = 0; i < 4; i++) ch.add(cyl(0.03, 0.025, 0.2, M.woodD, (i % 2 ? 1 : -1) * 0.3, 0.1, (i < 2 ? 1 : -1) * 0.3, 6));
+      g.add(ch);
+      // 落地灯、边几、书架、植物
+      g.add(cyl(0.2, 0.2, 0.03, M.frame, 3.9, 0.015, -2.3, 14)); g.add(cyl(0.015, 0.015, 1.35, M.frame, 3.9, 0.7, -2.3, 6));
+      g.add(cyl(0.12, 0.28, 0.3, std(0xffe9bf, { side: THREE.DoubleSide, roughness: 0.7 }), 3.9, 1.4, -2.3, 16)); lamp(g, 3.9, 1.35, -2.3, 2.6, 6);
+      g.add(rb(0.5, 0.5, 0.5, M.woodL, 3.4, 0.25, -0.2, 0.04)); plant(g, 3.4, -0.2, 0.75, M.white, 0.5);
+      g.add(rb(1.1, 1.5, 0.3, M.woodL, -3.7, 0.75, -2.78, 0.03));
+      for (i = 0; i < 4; i++) g.add(rb(1.04, 0.025, 0.28, M.woodD, -3.7, 0.3 + i * 0.36, -2.78, 0.005));
+      books(g, -4.12, 0.32, -2.78, 7); books(g, -3.95, 0.68, -2.78, 5, 0.24); g.add(rb(0.2, 0.2, 0.16, M.pink, -3.3, 0.8, -2.78, 0.04)); books(g, -4.1, 1.04, -2.78, 6, 0.26);
+      plant(g, -4.3, 2.4, 1.6); plant(g, 4.35, 2.4, 1.2, M.white);
+      art(g, 0.0, 0.92, -2.93, 0.7, 0.5, '#9fd0ee'); art(g, -1.0, 0.96, -2.93, 0.4, 0.5, '#ffc7d4'); art(g, 1.0, 0.96, -2.93, 0.4, 0.5, '#ffe3a0');
+      break;
+    case 'kitchen':
+      g.add(rb(2.7, 0.82, 0.62, M.cabinet, 0, 0.41, -1.9, 0.03)); g.add(rb(2.76, 0.06, 0.68, M.top, 0, 0.85, -1.9, 0.02));
+      for (i = 0; i < 4; i++){
+        g.add(rb(0.58, 0.62, 0.012, std(0xe9d3ae), -1.0 + i * 0.67, 0.42, -1.585, 0.005));
+        g.add(cyl(0.012, 0.012, 0.1, M.metal, -1.0 + i * 0.67 + 0.18, 0.62, -1.57, 6));
+      }
+      g.add(rb(0.62, 0.03, 0.42, M.steel, 0.55, 0.88, -1.9, 0.01)); g.add(rb(0.52, 0.03, 0.32, M.mirror, 0.55, 0.89, -1.9, 0.01));
+      g.add(cyl(0.012, 0.012, 0.22, M.steel, 0.55, 1.0, -2.1, 6)); var fa = rb(0.03, 0.03, 0.16, M.steel, 0.55, 1.1, -2.02, 0.01); g.add(fa);
+      g.add(rb(0.62, 0.02, 0.5, M.frame, -0.55, 0.89, -1.9, 0.01));
+      for (i = 0; i < 4; i++) g.add(ring(0.07, 0.012, M.steel, -0.7 + (i % 2) * 0.3, 0.9, -1.78 - (i < 2 ? 0 : 0.2)));
+      g.add(cyl(0.13, 0.13, 0.16, M.red, -0.7, 0.99, -1.78, 16)); g.add(cyl(0.135, 0.135, 0.02, M.red, -0.7, 1.08, -1.78, 16));
+      g.add(rb(0.72, 1.75, 0.72, M.fridge, -1.7, 0.875, -1.95, 0.07)); g.add(rb(0.7, 0.012, 0.01, M.metal, -1.7, 1.28, -1.585, 0.003));
+      g.add(rb(0.03, 0.4, 0.04, M.steel, -1.4, 1.5, -1.58, 0.01)); g.add(rb(0.03, 0.5, 0.04, M.steel, -1.4, 0.9, -1.58, 0.01));
+      g.add(rb(0.1, 0.1, 0.01, M.pink, -1.9, 1.5, -1.575, 0.004)); g.add(rb(0.09, 0.09, 0.01, M.yellow, -1.78, 1.38, -1.575, 0.004));
+      g.add(rb(0.5, 0.8, 2.0, M.cabinet, -1.98, 0.4, 0.9, 0.03)); g.add(rb(0.54, 0.05, 2.04, M.top, -1.98, 0.82, 0.9, 0.02));
+      plant(g, -1.98, 1.5, 0.6, M.white, 0.85);
+      var tbl = new THREE.Group(); tbl.position.set(0.3, 0, 0.9);
+      tbl.add(cyl(0.58, 0.58, 0.05, M.woodL, 0, 0.72, 0, 24)); tbl.add(cyl(0.05, 0.05, 0.7, M.woodD, 0, 0.36, 0, 8)); tbl.add(cyl(0.3, 0.3, 0.03, M.woodD, 0, 0.02, 0, 16));
+      tbl.add(cyl(0.12, 0.08, 0.06, M.white, 0, 0.78, 0, 16));
+      tbl.add(sph(0.045, M.red, -0.04, 0.84, 0.02)); tbl.add(sph(0.045, M.orange, 0.05, 0.84, -0.02)); tbl.add(sph(0.045, M.green, 0.0, 0.85, 0.06));
+      g.add(tbl);
+      [[-0.55, 0.95], [1.15, 0.85]].forEach(function (p){
+        g.add(cyl(0.2, 0.18, 0.06, M.pink, p[0], 0.46, p[1], 14)); g.add(cyl(0.03, 0.03, 0.43, M.woodD, p[0], 0.22, p[1], 6)); g.add(cyl(0.16, 0.16, 0.02, M.woodD, p[0], 0.01, p[1], 12));
+      });
+      pendant(g, 0.3, 0.9, 1.7, 0xffe0a0);
+      g.add(cyl(0.07, 0.08, 0.14, M.cream, 1.15, 0.97, -1.95, 12)); g.add(rb(0.34, 0.025, 0.24, M.woodD, 1.0, 0.89, -1.75, 0.01)); g.add(sph(0.08, M.yellow, 1.0, 0.94, -1.75, 1.5, 0.6, 0.8));
+      plant(g, 1.7, -2.42, 0.6, M.terra, 0.34);
+      break;
+    case 'study':
+      g.add(rb(2.4, 0.02, 1.7, M.rugB, 0, 0.011, -0.7, 0.01));
+      g.add(rb(1.9, 0.05, 0.78, M.woodL, 0, 0.75, -1.5, 0.02));
+      g.add(rb(0.05, 0.72, 0.7, M.woodL, -0.9, 0.36, -1.5, 0.015)); g.add(rb(0.56, 0.66, 0.7, M.woodL, 0.65, 0.35, -1.5, 0.02));
+      for (i = 0; i < 3; i++){ g.add(rb(0.5, 0.18, 0.01, M.woodD, 0.65, 0.12 + i * 0.21, -1.145, 0.004)); g.add(cyl(0.012, 0.012, 0.03, M.metal, 0.65, 0.12 + i * 0.21, -1.13, 6)); }
+      g.add(rb(0.42, 0.02, 0.3, M.metal, -0.35, 0.79, -1.45, 0.008));
+      var scr = new THREE.Group(); scr.position.set(-0.35, 0.92, -1.6); scr.rotation.x = -0.22;
+      scr.add(rb(0.42, 0.28, 0.015, M.frame, 0, 0, 0, 0.006)); scr.add(rb(0.38, 0.24, 0.008, M.screen, 0, 0, 0.01, 0.003)); g.add(scr);
+      g.add(cyl(0.07, 0.08, 0.02, M.frame, 0.2, 0.79, -1.75, 12)); g.add(cyl(0.01, 0.01, 0.3, M.frame, 0.2, 0.95, -1.75, 6));
+      g.add(cyl(0.05, 0.13, 0.14, std(0xffe9bf, { side: THREE.DoubleSide }), 0.2, 1.12, -1.7, 14)); lamp(g, 0.2, 1.08, -1.7, 2.4, 4.5);
+      var pg1 = rb(0.2, 0.012, 0.28, M.paper, 0.0, 0.785, -1.35, 0.004); pg1.rotation.y = 0.1; g.add(pg1);
+      var pg2 = rb(0.2, 0.012, 0.28, M.paper, 0.21, 0.785, -1.35, 0.004); pg2.rotation.y = -0.08; g.add(pg2);
+      g.add(cyl(0.04, 0.035, 0.09, M.pink, -0.8, 0.82, -1.3, 12)); g.add(rb(0.12, 0.03, 0.17, BOOKC[2], -0.65, 0.79, -1.25, 0.006));
+      g.add(rb(0.52, 0.07, 0.52, M.blue, 0, 0.46, -0.75, 0.04)); g.add(rb(0.5, 0.5, 0.07, M.blue, 0, 0.78, -0.5, 0.04)); g.add(cyl(0.025, 0.025, 0.4, M.metal, 0, 0.22, -0.75, 6)); g.add(cyl(0.22, 0.22, 0.03, M.frame, 0, 0.02, -0.75, 5));
+      g.add(rb(0.4, 0.06, 0.38, M.pink, 0, 0.51, -0.75, 0.03));
+      g.add(rb(1.1, 1.85, 0.32, M.woodD, 1.85, 0.92, -2.2, 0.03));
+      for (i = 0; i < 6; i++) g.add(rb(1.06, 0.025, 0.3, M.wood, 1.85, 0.05 + i * 0.36, -2.2, 0.004));
+      books(g, 1.4, 0.07, -2.2, 8, 0.3); books(g, 1.5, 0.43, -2.2, 6, 0.28); books(g, 1.35, 0.79, -2.2, 9, 0.3); books(g, 1.55, 1.15, -2.2, 5, 0.26); g.add(sph(0.1, M.lilac, 2.15, 1.27, -2.2));
+      g.add(cyl(0.2, 0.2, 0.03, M.frame, -2.1, 0.015, -1.9, 14)); g.add(cyl(0.015, 0.015, 1.2, M.frame, -2.1, 0.62, -1.9, 6));
+      g.add(cyl(0.1, 0.24, 0.26, std(0xdcecff, { side: THREE.DoubleSide }), -2.1, 1.25, -1.9, 14)); lamp(g, -2.1, 1.2, -1.9, 1.8, 5);
+      plant(g, -2.15, -0.5, 1.5, M.white);
+      var cat = new THREE.Group(); cat.position.set(-0.95, 0.04, -0.15); cat.rotation.y = 0.6;
+      var cm = std(0xf4d7b5, { roughness: 1 });
+      cat.add(sph(0.2, cm, 0, 0.1, 0, 1.4, 0.7, 1)); cat.add(sph(0.12, cm, 0.28, 0.12, 0.02)); cat.add(cyl(0.03, 0.01, 0.08, cm, 0.3, 0.24, 0.07, 3)); cat.add(cyl(0.03, 0.01, 0.08, cm, 0.3, 0.24, -0.04, 3));
+      cat.add(sph(0.06, cm, -0.3, 0.08, 0.06, 1.4, 0.5, 0.5)); g.add(cat); SWAY.push({ o: cat, ph: 1, breath: true });
+      art(g, -2.43, 0.8, 0.2, 0.7, 0.5, '#ffd4a8', Math.PI / 2); art(g, -2.43, 0.8, -0.8, 0.4, 0.5, '#bde0c8', Math.PI / 2);
+      break;
+    case 'bath':
+      g.add(rb(1.7, 0.58, 0.9, M.white, -0.4, 0.29, -0.75, 0.12)); g.add(rb(1.5, 0.04, 0.72, M.water, -0.4, 0.5, -0.75, 0.02));
+      for (i = 0; i < 9; i++) g.add(sph(0.06 + (i % 3) * 0.015, M.white, -0.9 + (i * 0.37) % 1.0, 0.55, -0.95 + (i * 0.23) % 0.4));
+      g.add(sph(0.07, M.duck, -0.1, 0.57, -0.7, 1, 0.9, 1.1)); g.add(sph(0.045, M.duck, -0.04, 0.64, -0.7)); g.add(rb(0.05, 0.015, 0.025, M.orange, 0.0, 0.64, -0.7, 0.004));
+      g.add(cyl(0.015, 0.015, 0.2, M.steel, -1.2, 0.68, -0.75, 6)); g.add(rb(0.03, 0.03, 0.1, M.steel, -1.14, 0.78, -0.75, 0.01));
+      g.add(rb(0.42, 0.3, 0.56, M.white, 1.1, 0.17, -1.05, 0.08)); g.add(rb(0.4, 0.34, 0.16, M.white, 1.1, 0.5, -1.28, 0.05)); g.add(rb(0.4, 0.03, 0.5, M.cream, 1.1, 0.34, -1.02, 0.015));
+      g.add(rb(0.45, 0.78, 0.8, M.woodL, -1.2, 0.39, 0.7, 0.03)); g.add(rb(0.48, 0.05, 0.84, M.white, -1.2, 0.8, 0.7, 0.02));
+      g.add(cyl(0.012, 0.012, 0.16, M.steel, -1.4, 0.9, 0.7, 6));
+      g.add(rb(0.03, 0.55, 0.6, M.mirror, -1.46, 1.1, 0.7, 0.01)); g.add(rb(0.02, 0.6, 0.66, M.frameW, -1.47, 1.1, 0.7, 0.01));
+      g.add(rb(0.8, 0.03, 0.5, M.pink, 0.4, 0.016, 0.3, 0.012));
+      var tw = rb(0.34, 0.05, 0.62, M.mint, 0.1, 0.6, -0.3, 0.02); tw.rotation.z = 0.0; g.add(tw);
+      g.add(cyl(0.04, 0.04, 0.09, M.cream, 0.55, 0.64, -1.18, 10)); g.add(sph(0.02, M.bulb, 0.55, 0.7, -1.18)); lamp(g, 0.55, 0.72, -1.18, 0.9, 3);
+      plant(g, 1.2, 1.05, 0.8, M.terra); g.add(rb(0.3, 0.06, 0.45, M.pink, -1.15, 0.03, -0.1, 0.02)); // 毛巾架下的脚凳
+      break;
+    case 'hall':
+      g.add(rb(1.7, 0.8, 0.38, M.woodL, 0, 0.4, -1.2, 0.03));
+      for (i = 0; i < 3; i++){ g.add(rb(0.52, 0.5, 0.01, M.woodD, -0.55 + i * 0.55, 0.4, -1.005, 0.004)); g.add(cyl(0.01, 0.01, 0.06, M.metal, -0.55 + i * 0.55, 0.5, -0.99, 6)); }
+      g.add(rb(0.3, 0.02, 0.2, M.pink, -0.5, 0.82, -1.2, 0.01)); plant(g, 0.55, -1.2, 0.6, M.white, 0.8); lamp(g, -0.1, 1.0, -1.25, 1.4, 4);
+      g.add(cyl(0.04, 0.12, 0.2, M.cream, -0.1, 0.92, -1.25, 12));
+      g.add(rb(0.4, 0.42, 1.0, M.woodL, -1.95, 0.21, 0.2, 0.04)); g.add(rb(0.42, 0.08, 1.02, M.pink, -1.95, 0.46, 0.2, 0.04));
+      g.add(cyl(0.2, 0.2, 0.02, M.frame, 1.9, 0.01, -1.2, 10)); g.add(cyl(0.015, 0.015, 1.55, M.woodD, 1.9, 0.78, -1.2, 6));
+      for (i = 0; i < 3; i++){ var hk = rb(0.2, 0.02, 0.02, M.woodD, 1.9, 1.5 - i * 0.05, -1.2, 0.006); hk.rotation.y = i * 2.1; g.add(hk); }
+      g.add(rb(0.26, 0.52, 0.1, M.pinkD, 1.9, 1.15, -1.1, 0.04)); g.add(rb(0.3, 0.3, 0.12, M.blue, 1.95, 1.3, -1.28, 0.04));
+      g.add(cyl(0.1, 0.09, 0.3, M.blue, 1.3, 0.15, -1.2, 12)); g.add(cyl(0.012, 0.012, 0.42, M.red, 1.3, 0.4, -1.2, 5));
+      [[-0.55, 0.55], [-0.3, 0.6]].forEach(function (p, j){ g.add(rb(0.1, 0.07, 0.23, j ? M.pink : M.red, p[0], 0.045, p[1], 0.03)); g.add(rb(0.1, 0.07, 0.23, j ? M.pink : M.red, p[0] + 0.14, 0.045, p[1], 0.03)); });
+      g.add(rb(0.9, 0.03, 0.55, M.rugR, 0.2, 0.017, 0.6, 0.012));
+      art(g, 0, 0.9, -1.45, 0.6, 0.4, '#b8dcee');
+      break;
+    case 'stairs':
+      for (i = 0; i < 5; i++){
+        var zz = 1.15 - i * 0.55;
+        g.add(rb(1.4, 0.2, 0.55, M.woodL, 0, 0.1 + i * 0.2, zz, 0.02)); g.add(rb(0.66, 0.02, 0.42, M.pink, 0, 0.21 + i * 0.2, zz, 0.008));
+        g.add(rb(0.04, 0.5, 0.04, M.woodD, 0.66, 0.46 + i * 0.2, zz, 0.01));
+      }
+      var rl = rb(0.06, 0.05, 2.36, M.woodD, 0.66, 1.1, 0.05, 0.02); rl.rotation.x = 0.349; g.add(rl);
+      g.add(rb(0.05, 1.3, 0.05, M.woodD, 0.66, 0.65, 1.3, 0.015)); lamp(g, 0.6, 1.4, 0.2, 1.2, 4);
+      break;
+    case 'bedroom':
+      circRug(g, 1.0, -0.2, 1.85, M.rugP);
+      g.add(rb(2.2, 0.3, 2.7, M.woodL, 1.0, 0.2, -1.4, 0.05)); g.add(rb(2.1, 0.2, 2.6, M.cream, 1.0, 0.45, -1.4, 0.08));
+      g.add(rb(2.14, 0.12, 1.6, M.pink, 1.0, 0.58, -0.95, 0.06)); g.add(rb(2.16, 0.14, 0.26, M.pinkD, 1.0, 0.6, -1.78, 0.06));
+      g.add(rb(0.8, 0.14, 0.42, M.white, 0.5, 0.58, -2.4, 0.06)); g.add(rb(0.8, 0.14, 0.42, M.white, 1.5, 0.58, -2.4, 0.06));
+      g.add(rb(2.3, 0.95, 0.14, M.woodL, 1.0, 0.62, -2.78, 0.06));
+      var wh = new THREE.Group(); wh.position.set(1.0, 0.7, -1.15);
+      wh.add(sph(0.2, M.whale, 0, 0.1, 0, 1.3, 0.9, 1)); wh.add(sph(0.16, M.white, 0, 0.04, 0.08, 1.2, 0.6, 0.9)); wh.add(sph(0.025, M.black, -0.1, 0.18, 0.17)); wh.add(sph(0.025, M.black, 0.1, 0.18, 0.17));
+      var wt = sph(0.07, M.whale, 0, 0.26, -0.22, 1.6, 0.4, 0.8); wt.rotation.x = 0.5; wh.add(wt); wh.rotation.y = 0.4; g.add(wh);
+      [[-0.75, 0], [2.3, 1]].forEach(function (p){
+        var w = p[1] ? 0.4 : 0.55;
+        g.add(rb(w, 0.52, 0.5, M.woodL, p[0], 0.26, -2.52, 0.035)); g.add(rb(w - 0.06, 0.16, 0.01, M.woodD, p[0], 0.4, -2.265, 0.004));
+        g.add(cyl(0.04, 0.09, 0.12, M.cream, p[0], 0.58, -2.52, 12)); lamp(g, p[0], 0.66, -2.52, 1.6, 4);
+      });
+      g.add(rb(0.14, 0.18, 0.02, M.frameW, -0.6, 0.62, -2.35, 0.006)); g.add(rb(0.1, 0.13, 0.025, std('#9ec6ee'), -0.6, 0.62, -2.34, 0.004));
+      g.add(rb(0.6, 1.9, 1.3, M.woodL, -2.15, 0.95, -0.2, 0.035)); g.add(rb(0.01, 1.7, 0.01, M.woodD, -1.845, 0.95, -0.2, 0.002));
+      g.add(cyl(0.012, 0.012, 0.08, M.metal, -1.85, 0.95, -0.28, 6)); g.add(cyl(0.012, 0.012, 0.08, M.metal, -1.85, 0.95, -0.12, 6));
+      for (i = 0; i < 12; i++){
+        var fx = -2.2 + i * 0.4, fy = 1.0 - 0.1 * Math.sin((i % 4) / 3 * Math.PI);
+        g.add(sph(0.025, M.bulb, fx, fy, -3.15));
+      }
+      g.add(rb(0.55, 0.95, 0.05, M.curtain, -2.2, 0.6, -3.1, 0.02)); g.add(rb(0.55, 0.95, 0.05, M.curtain, 2.2, 0.6, -3.1, 0.02));
+      plant(g, 2.2, 2.7, 1.1); g.add(rb(0.9, 0.04, 0.5, M.mint, 1.0, 0.025, 1.4, 0.015));
+      break;
+    case 'guest':
+      g.add(rb(1.8, 0.28, 2.2, M.woodL, 0, 0.18, -0.9, 0.05)); g.add(rb(1.72, 0.18, 2.12, M.cream, 0, 0.41, -0.9, 0.07));
+      g.add(rb(1.74, 0.11, 1.3, M.blue, 0, 0.52, -0.45, 0.05)); g.add(rb(0.7, 0.13, 0.4, M.white, 0, 0.53, -1.7, 0.05));
+      g.add(rb(1.9, 0.78, 0.14, M.woodL, 0, 0.55, -2.0, 0.05));
+      g.add(rb(0.5, 0.05, 1.1, M.woodL, -1.85, 0.7, 0.9, 0.02)); g.add(rb(0.05, 0.68, 1.0, M.woodL, -1.85, 0.34, 0.9, 0.01));
+      g.add(rb(0.34, 0.04, 0.34, M.mint, -1.4, 0.4, 0.9, 0.02)); g.add(rb(0.4, 0.4, 0.04, M.mint, -1.18, 0.62, 0.9, 0.02));
+      g.add(cyl(0.04, 0.09, 0.12, M.cream, -1.88, 0.78, 0.5, 12)); lamp(g, -1.88, 0.85, 0.5, 1.5, 4);
+      var su = rb(0.55, 0.4, 0.28, M.lilac, 1.5, 0.2, 1.2, 0.05); su.rotation.y = 0.5; g.add(su); g.add(rb(0.2, 0.025, 0.03, M.metal, 1.5, 0.43, 1.2, 0.01));
+      plant(g, 1.8, -1.6, 0.9, M.white);
+      break;
+    case 'storage':
+      g.add(rb(0.9, 0.7, 0.9, M.carton, -1.1, 0.35, -0.5, 0.02)); g.add(rb(0.92, 0.03, 0.2, M.tape, -1.1, 0.71, -0.5, 0.005));
+      g.add(rb(0.7, 0.55, 0.7, M.carton, -0.2, 0.27, -0.55, 0.02)); g.add(rb(0.72, 0.03, 0.18, M.tape, -0.2, 0.56, -0.55, 0.005));
+      g.add(rb(0.55, 0.4, 0.5, M.carton, -0.62, 0.9, -0.5, 0.02));
+      g.add(rb(1.0, 0.8, 0.6, M.woodL, 1.1, 0.4, -0.5, 0.025)); g.add(rb(0.9, 0.02, 0.58, M.woodD, 1.1, 0.4, -0.5, 0.005));
+      g.add(rb(0.04, 1.4, 1.9, M.woodD, -2.18, 0.7, 0, 0.01));
+      for (i = 0; i < 3; i++) g.add(rb(0.34, 0.03, 1.9, M.wood, -2.0, 0.3 + i * 0.45, 0.0, 0.006));
+      g.add(rb(0.28, 0.2, 0.4, M.carton, -2.0, 0.42, -0.5, 0.02)); g.add(rb(0.28, 0.2, 0.5, M.pink, -2.0, 0.87, 0.3, 0.03)); g.add(cyl(0.1, 0.1, 0.28, M.cream, -2.0, 1.04, -0.6, 10));
+      var rr = cyl(0.14, 0.14, 0.7, M.rugB, 1.5, 0.14, 0.9, 12); rr.rotation.z = Math.PI / 2; g.add(rr);
+      pendant(g, 0.2, 0.2, 1.8, 0xffd9a0);
+      break;
+    case 'corridor':
+      g.add(rb(6.8, 0.02, 0.9, M.rugR, 0.5, 0.011, 0.3, 0.01)); g.add(rb(6.0, 0.022, 0.5, M.cream, 0.5, 0.012, 0.3, 0.01));
+      g.add(rb(1.2, 0.05, 0.35, M.woodL, 1.5, 0.7, -1.3, 0.02)); [[-0.5, -1.15], [0.5, -1.15], [-0.5, -1.45], [0.5, -1.45]].forEach(function (p){ g.add(cyl(0.025, 0.02, 0.68, M.woodD, 1.5 + p[0], 0.34, p[1], 6)); });
+      g.add(cyl(0.07, 0.06, 0.2, M.white, 1.2, 0.83, -1.3, 12)); flowers(g, 1.2, -1.3, '#ff9db8', 5); g.add(rb(0.2, 0.03, 0.2, M.pink, 1.9, 0.745, -1.3, 0.01));
+      lamp(g, 1.5, 1.02, -1.32, 1.4, 4.5); g.add(cyl(0.05, 0.1, 0.1, M.cream, 1.5, 0.98, -1.32, 10));
+      art(g, 1.5, 0.95, -1.44, 0.55, 0.4, '#ffd0dc'); art(g, 0.6, 0.9, -1.44, 0.35, 0.45, '#b9e0cf'); art(g, 2.4, 0.9, -1.44, 0.35, 0.45, '#f6e3a6');
+      lamp(g, -2.4, 1.0, -1.35, 1.4, 4.5); g.add(cyl(0.05, 0.1, 0.1, M.cream, -2.4, 0.96, -1.35, 10));
+      plant(g, -4.2, -1.1, 1.1); plant(g, 4.3, 1.1, 0.9, M.white);
+      break;
+    case 'garden':
+      tree(g, -4.4, -1.8, 1.0, 0xffb7c9); tree(g, 4.0, 1.5, 0.95); tree(g, 4.7, -2.0, 1.1, 0x78c97d);
+      for (i = 0; i < 6; i++) bush(g, -5.2 + i * 1.9, -3.2, 0.9 + (i % 2) * 0.2, i % 3 ? 0x62b36a : 0x74c47a);
+      for (k = 0; k < 3; k++) for (i = 0; i < 6; i++){
+        var fx2 = -5.0 + (i % 3) * 0.5 + k * 0.1, fz2 = 0.8 + Math.floor(i / 3) * 0.5 + k * 0.05;
+        if (k === 0) flowers(g, fx2, fz2, '#ff8fb0', 1);
+      }
+      for (i = 0; i < 9; i++){ var px = -5.5 + (i % 3) * 0.55, pz = 0.5 + Math.floor(i / 3) * 0.55; flowers(g, px, pz, ['#ff8fb0', '#ffd16a', '#b79cff'][i % 3], 2); }
+      g.add(ring(0.9, 0.04, M.stoneD, -5.0, 0.04, 1.1)); 
+      for (i = 0; i < 6; i++){ var st = cyl(0.3, 0.3, 0.05, M.stone, -3.2 + i * 0.95 - (i > 3 ? 0 : 0), 0.025, -2.4 + (i % 2) * 0.12, 8); g.add(st); }
+      var lg = new THREE.Group(); lg.position.set(-0.8, 0, 3.05);
+      lg.add(rb(1.8, 0.1, 0.7, M.cloth || M.sofa, 0, 0.28, 0, 0.04)); var lb = rb(0.55, 0.1, 0.7, M.sofa, 0.9, 0.5, 0, 0.04); lb.rotation.z = 0.9; lg.add(lb);
+      for (i = 0; i < 4; i++) lg.add(cyl(0.03, 0.03, 0.28, M.woodD, (i % 2 ? 0.8 : -0.8), 0.14, (i < 2 ? 0.3 : -0.3), 6));
+      lg.add(rb(0.62, 0.03, 0.34, M.mint, -0.3, 0.35, 0, 0.012)); g.add(lg);
+      g.add(cyl(0.02, 0.02, 1.7, M.woodD, 1.9, 0.85, 3.0, 6)); var pc = cyl(0.04, 1.0, 0.4, M.pink, 1.9, 1.75, 3.0, 12); pc.material = M.pink; g.add(pc);
+      g.add(cyl(0.22, 0.22, 0.04, M.woodL, 1.9, 0.42, 3.0, 14)); g.add(cyl(0.03, 0.03, 0.4, M.woodD, 1.9, 0.2, 3.0, 6)); g.add(cyl(0.05, 0.04, 0.1, M.cream, 1.9, 0.5, 3.0, 8));
+      [[-5.6, 3.0], [5.6, 3.0], [5.6, -1.0]].forEach(function (p){ g.add(cyl(0.025, 0.025, 1.0, M.frame, p[0], 0.5, p[1], 6)); g.add(sph(0.1, M.bulb, p[0], 1.05, p[1])); lamp(g, p[0], 1.05, p[1], 1.6, 5); });
+      butterflies(g, -3.5, 1.2, 3);
+      break;
+  }
+  return g;
+}
+
+// ── 地块调色（页面里用，不改 rooms.json）────────────────────────────
+var PAL = {
+  kitchen: { f: ['tile', '#f6e8d2', '#e8d2b0'], w: '#ffe6c2' }, study:  { f: ['wood', '#b98a5e', '#7d5535'], w: '#cfe0f2' },
+  living:  { f: ['wood', '#d8ad80', '#9a6c45'], w: '#fff0dc' }, bath:   { f: ['tile', '#d6f0ec', '#aedbd4'], w: '#c2e8e3' },
+  hall:    { f: ['tile', '#ebdcc6', '#d0bb9d'], w: '#f7e8d4' }, stairs: { f: ['wood', '#c79a6b', '#8e6339'], w: '#f2dec6' },
+  bedroom: { f: ['wood', '#dbb48e', '#a07048'], w: '#fbdbe5' }, guest:  { f: ['wood', '#ccA582', '#8f6a46'], w: '#dae5f6' },
+  storage: { f: ['wood', '#b8916a', '#7c5a3a'], w: '#ecdfc7' }, corridor: { f: ['wood', '#d4aa80', '#996b44'], w: '#fcebd9' },
+  garden:  { f: ['grass', '#7fc47a', '#5fa75e'], w: '#9ad48a' }
+};
+var PREV_HOVER = null;
+
+// ── 环境：房后是海 + 沙滩 + 木露台，房前是草坪花园 ───────────────────
+var GULLS = [], SHORE = [];
+function sparkTex(){
+  var c = document.createElement('canvas'); c.width = c.height = 256;
+  var g = c.getContext('2d'), R = rnd(77), i;
+  for (i = 0; i < 90; i++){
+    var x = R() * 256, y = R() * 256, r = 1 + R() * 2.6, gr = g.createRadialGradient(x, y, 0, x, y, r * 2.4);
+    gr.addColorStop(0, 'rgba(255,255,255,' + (0.5 + R() * 0.5) + ')'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(x - r * 3, y - r * 3, r * 6, r * 6);
+  }
+  var t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.repeat.set(26, 10);
+  return t;
+}
+function railSeg(x0, x1, y, z, mat, h){ if (x1 - x0 > 0.05) group.add(rb(x1 - x0, h || 0.06, 0.1, mat, (x0 + x1) / 2, y, z, 0.02)); }
+
+function buildScenery(rooms1f){
+  var s = DATA.scenery || {}, sea = s.sea, i, W = 260, D = 130;
+  var sr = rooms1f.filter(function (r){ return r.window === 'sea'; });
+  if (sea){
+    // 海：底色（慢慢流动的纹理）+ 涟漪叠层 + 阳光碎闪 + 一圈圈涌向沙滩的白浪
+    M.sea.map = canvasTex('water', '#58bddb', '#eefcff', 40, 16); M.sea.roughness = 0.38; M.sea.needsUpdate = true;
+    var surf = new THREE.Mesh(new THREE.PlaneGeometry(W, D), M.sea);
+    surf.rotation.x = -Math.PI / 2; surf.position.set(7, -0.62, -4.4 - D / 2); surf.receiveShadow = true; surf.userData.noFade = true; group.add(surf);
+    var rt = canvasTex('water', '#000000', '#ffffff', 64, 26);
+    var rip = new THREE.MeshBasicMaterial({ map: rt, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false });
+    var rp = new THREE.Mesh(new THREE.PlaneGeometry(W, D), rip);
+    rp.rotation.x = -Math.PI / 2; rp.position.set(7, -0.6, -4.4 - D / 2); group.add(rp);
+    var st = sparkTex();
+    var spk = new THREE.MeshBasicMaterial({ map: st, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending, depthWrite: false });
+    var sp = new THREE.Mesh(new THREE.PlaneGeometry(W, D), spk);
+    sp.rotation.x = -Math.PI / 2; sp.position.set(7, -0.585, -4.4 - D / 2); group.add(sp);
+    SEA = { main: M.sea, wave: M.foam, spark: spk, ripple: rip, rt: rt, st: st };
+    for (i = 0; i < 4; i++){
+      var fm = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false });
+      var sh = new THREE.Mesh(new THREE.PlaneGeometry(W, 0.34), fm);
+      sh.rotation.x = -Math.PI / 2; sh.position.set(7, -0.57, -6); group.add(sh); SHORE.push({ o: sh, m: fm, ph: i * 0.25 });
+    }
+    for (i = 0; i < 9; i++){
+      var line = new THREE.Mesh(new THREE.PlaneGeometry(W * (0.35 + (i % 3) * 0.1), 0.12 + (i % 4) * 0.05), M.foam);
+      line.rotation.x = -Math.PI / 2; line.position.set(7 + (i % 2 ? 6 : -6), -0.58, -11 - i * 8);
+      group.add(line); WAVES.push({ o: line, ph: i * 0.9, side: i % 2 ? 6 : -6 });
+    }
+    var sand = box(W, 0.4, 3.0, M.sand, 7, -0.42, -3.0); sand.userData.noFade = true; sand.receiveShadow = true; group.add(sand);
+    var wet = new THREE.Mesh(new THREE.PlaneGeometry(W, 0.8), std(0xe0c690, { roughness: 1 }));
+    wet.rotation.x = -Math.PI / 2; wet.position.set(7, -0.215, -4.5); group.add(wet);
+    [[-3, -3.5, 0.3], [15.5, -3.3, 0.24], [19, -3.7, 0.36], [-7, -3.2, 0.28], [12.5, -3.9, 0.2], [24, -3.4, 0.3]].forEach(function (p){ group.add(sph(p[2], M.stoneD, p[0], -0.2, p[1], 1.3, 0.7, 1)); });
+    for (i = 0; i < 8; i++) group.add(sph(0.05, i % 2 ? M.pink : M.cream, -2 + i * 3.1, -0.2, -3.0 - (i % 3) * 0.4, 1, 0.6, 1));
+    for (i = 0; i < 3; i++){
+      var gb = new THREE.Group(), wm = std(0xffffff, { roughness: 0.9 }), w1 = rb(0.36, 0.015, 0.09, wm, -0.18, 0, 0, 0.005), w2 = rb(0.36, 0.015, 0.09, wm, 0.18, 0, 0, 0.005);
+      gb.add(sph(0.06, wm, 0, 0, 0, 1, 0.8, 1.6)); gb.add(w1); gb.add(w2); group.add(gb);
+      GULLS.push({ o: gb, w1: w1, w2: w2, cx: 4 + i * 5, cz: -14 - i * 5, r: 5 + i * 2.2, sp: 0.16 + i * 0.05, ph: i * 2.3, y: 3.2 + i * 0.7 });
+    }
+  }
+  if (sr.length){
+    var x0 = Math.min.apply(null, sr.map(function (r){ return r.x - r.w / 2; })), x1 = Math.max.apply(null, sr.map(function (r){ return r.x + r.w / 2; }));
+    var cx = (x0 + x1) / 2, DW = x1 - x0 + 0.6, ex = x1 + 0.3, sx = x0 - 0.3;
+    group.add(rb(DW, 0.12, 2.2, std(0xffffff, { map: canvasTex('wood', '#c99a68', '#8a6240', DW / 1.6, 1.4) }), cx, -0.09, -1.2, 0.02));
+    var np = Math.round(DW / 1.4);
+    for (i = 0; i <= np; i++){ var px = sx + i * (DW / np); if (Math.abs(px - cx) > 0.95) group.add(rb(0.07, 0.62, 0.07, M.woodD, px, 0.26, -2.18, 0.015)); }
+    railSeg(sx, cx - 0.8, 0.58, -2.18, M.woodL, 0.06); railSeg(cx + 0.8, ex, 0.58, -2.18, M.woodL, 0.06);
+    railSeg(sx, cx - 0.8, 0.34, -2.18, M.woodL, 0.04); railSeg(cx + 0.8, ex, 0.34, -2.18, M.woodL, 0.04);
+    for (i = 0; i < 3; i++) group.add(rb(1.5, 0.12, 0.38, M.woodL, cx, -0.12 - i * 0.07, -2.45 - i * 0.34, 0.02));
+    var dc = new THREE.Group(); dc.position.set(sx + 1.3, 0, -1.2);
+    dc.add(rb(0.7, 0.1, 1.3, M.sofa, 0, 0.26, 0, 0.04)); var cb = rb(0.7, 0.1, 0.6, M.sofa, 0, 0.5, -0.55, 0.04); cb.rotation.x = -0.9; dc.add(cb);
+    for (var q = 0; q < 4; q++) dc.add(cyl(0.025, 0.025, 0.25, M.woodD, (q % 2 ? 0.3 : -0.3), 0.12, (q < 2 ? 0.55 : -0.55), 6));
+    group.add(dc);
+    plant(group, ex - 0.4, -1.9, 1.1, M.terra, 0.0); plant(group, sx + 0.4, -1.9, 0.9, M.white, 0.0);
+    group.add(cyl(0.2, 0.2, 0.03, M.woodL, cx + 1.4, 0.3, -1.2, 14)); group.add(cyl(0.03, 0.03, 0.28, M.woodD, cx + 1.4, 0.15, -1.2, 6));
+    group.add(cyl(0.05, 0.06, 0.12, M.cream, cx + 1.4, 0.38, -1.2, 10)); group.add(sph(0.04, M.bulb, cx + 1.4, 0.46, -1.2)); lamp(group, cx + 1.4, 0.5, -1.2, 1.1, 3.5);
+  }
+  var lawn = s.lawn, gf = new THREE.Group(); gf.userData.fadeable = true; group.add(gf);
+  if (lawn){
+    var lw = Number(lawn.w) || 60, ld = Number(lawn.d) || 16, lz = Number(lawn.z) || 16;
+    var grass = new THREE.Mesh(new THREE.PlaneGeometry(lw, ld), std(0xffffff, { roughness: 1, map: canvasTex('grass', '#86cf7e', '#68b562', lw / 3, ld / 3) }));
+    grass.rotation.x = -Math.PI / 2; grass.position.set(7, -0.09, lz + 4); grass.scale.y = 1.5; grass.receiveShadow = true; grass.userData.noFade = true; group.add(grass);
+    for (var j = 0; j < 6; j++) group.add(cyl(0.3, 0.3, 0.05, M.stone, 12.1 + (j % 2 ? 0.22 : -0.22), -0.04, 11.9 + j * 1.0, 8));
+    tree(gf, -2.5, 14.5, 1.15, 0xffb7c9); tree(gf, 16.6, 13.5, 1.05); tree(gf, 2.2, 21.5, 1.2, 0x78c97d); tree(gf, 14.5, 21, 0.95, 0xffb7c9); tree(gf, -4.5, 6, 1.0, 0x78c97d); tree(gf, 18.5, 5, 1.1, 0xffb7c9);
+    for (var b = 0; b < 12; b++) bush(gf, 3.0 + b * 1.3, 11.9 + (b % 3) * 0.04, 0.9 + (b % 2) * 0.2, b % 3 ? 0x62b36a : 0x74c47a);
+    for (var f = 0; f < 14; f++) flowers(gf, 15.0 + (f % 4) * 0.45, 14.5 + Math.floor(f / 4) * 0.45, ['#ff8fb0', '#ffd16a', '#b79cff'][f % 3], 2);
+    gf.add(rb(0.35, 0.55, 0.3, M.red, 14.2, 0.95, 12.5, 0.04)); gf.add(cyl(0.025, 0.025, 0.9, M.woodD, 14.2, 0.45, 12.5, 6));
+    [[2.0, 12.6], [13.8, 18.5]].forEach(function (pp){ gf.add(cyl(0.025, 0.025, 1.0, M.frame, pp[0], 0.5, pp[1], 6)); gf.add(sph(0.1, M.bulb, pp[0], 1.05, pp[1])); lamp(gf, pp[0], 1.05, pp[1], 1.8, 5); });
+    for (var fp = 0; fp < 30; fp++) gf.add(rb(0.09, 0.5, 0.05, M.frameW, -3 + fp * 0.9, 0.25, 25.5, 0.01));
+    gf.add(rb(27, 0.06, 0.05, M.frameW, 10.5, 0.38, 25.5, 0.01));
+    butterflies(group, 12.5, 15, 3);
+  }
+}
+
+// ── 建整个世界：一楼 + 二楼 + 花园，连成一座有海有院子的小房子 ──────────
+var WORLD = null, FADE = [], UPPER = [], LABELS = [], GHOSTUP = new Map(), UK = 1;
+function clearGroup(){
+  while (group.children.length) group.remove(group.children[group.children.length - 1]);
+  ALL_MATS.length = STATIC_COUNT;
+  LAMPC = []; SWAY = []; BFLY = []; WAVES = []; PICKS = []; FADE = []; UPPER = []; LABELS = []; GULLS = []; SHORE = [];
+  GHOSTUP = new Map(); UK = 1; WORLD = null; SEA = null;
+}
+
+function buildWorld(){
+  clearGroup();
+  var R1 = viewRooms('1f'), R2 = viewRooms('2f'), RO = viewRooms('out');
+  var g1 = new THREE.Group(), g2 = new THREE.Group(), gO = new THREE.Group();
+  g2.position.y = FH; gO.position.set(GOFF.x, 0, GOFF.z);
+  group.add(g1); group.add(g2); group.add(gO);
+  WORLD = { g1: g1, g2: g2, gO: gO };
+  buildScenery(R1);
+
+  function slab(rooms, g){
+    var a = 1e9, b = -1e9, c = 1e9, d = -1e9;
+    rooms.forEach(function (r){ a = Math.min(a, r.x - r.w / 2); b = Math.max(b, r.x + r.w / 2); c = Math.min(c, r.z - r.d / 2); d = Math.max(d, r.z + r.d / 2); });
+    var m = rb(b - a + 1.0, 0.3, d - c + 1.0, std(0xf1dfc4), (a + b) / 2, -0.17, (c + d) / 2, 0.06); m.userData.noFade = true; g.add(m);
+    return { a: a, b: b, c: c, d: d };
+  }
+  slab(R1, g1);
+  var s2 = slab(R2, g2);
+  [[s2.a + 0.1, s2.c + 0.1], [s2.b - 0.1, s2.c + 0.1], [s2.a + 0.1, s2.d - 0.1], [s2.b - 0.1, s2.d - 0.1]].forEach(function (p){
+    g1.add(rb(0.16, FH - 0.3, 0.16, M.woodD, p[0], (FH - 0.3) / 2, p[1], 0.02));
+  });
+
+  RO.filter(function (r){ return r.kind === 'water'; }).forEach(function (r){
+    gO.add(rb(r.w + 0.7, 0.34, r.d + 0.7, M.stone, r.x, -0.13, r.z, 0.08));
+    gO.add(rb(r.w, 0.2, r.d, std(0xffffff, { map: canvasTex('tile', '#bfeaf2', '#9fdbe8', 6, 4) }), r.x, -0.02, r.z, 0.03));
+    gO.add(rb(r.w - 0.1, 0.05, r.d - 0.1, M.water, r.x, 0.03, r.z, 0.02));
+    var fl = ring(0.42, 0.11, M.pinkD, r.x + 1.0, 0.1, r.z + 0.3); gO.add(fl); WAVES.push({ o: fl, bob: true, ph: 0.7 });
+    var fl2 = ring(0.28, 0.08, M.yellow, r.x - 1.4, 0.1, r.z - 0.5); gO.add(fl2); WAVES.push({ o: fl2, bob: true, ph: 2.1 });
+    [-1, 1].forEach(function (sg){ gO.add(cyl(0.02, 0.02, 0.7, M.steel, r.x - r.w / 2 - 0.02, 0.3, r.z + sg * 0.2, 6)); });
+    gO.add(rb(0.04, 0.04, 0.4, M.steel, r.x - r.w / 2 - 0.02, 0.65, r.z, 0.01));
+  });
+
+  DATA.rooms.forEach(function (r){
+    if (r.kind === 'water') return;
+    var tg = r.floor === '2f' ? g2 : r.floor === 'out' ? gO : g1;
+    var g = new THREE.Group(); g.position.set(r.x, 0, r.z);
+    var pal = PAL[r.id], fk = pal ? pal.f : ['wood', r.floorColor, '#000'];
+    var floorMat = std(0xffffff, { roughness: fk[0] === 'tile' ? 0.35 : fk[0] === 'grass' ? 1 : 0.6,
+      map: canvasTex(fk[0], fk[1], fk[2], r.w / 1.6, r.d / 1.6), emissive: 0xffd6a0, emissiveIntensity: 0 });
+    var floor = box(r.w, 0.12, r.d, floorMat, 0, -0.06, 0);
+    floor.userData.room = r; floor.userData.noFade = true; PICKS.push(floor); g.add(floor);
+
+    var lab;
+    if (r.kind !== 'outdoor'){
+      var wc = pal ? pal.w : r.wallColor;
+      var wallMat = std(0xffffff, { roughness: 0.9, map: canvasTex('plaster', wc, '#b89a80', r.w / 2, 1) });
+      var trimMat = std(0xfff4e4, { roughness: 0.6 });
+      var H = 1.12, T = 0.11;
+      var addWall = function (mesh){ mesh.userData.isWall = true; g.add(mesh); };
+      var trim = function (mesh){ mesh.userData.isWall = true; mesh.material = trimMat; g.add(mesh); };
+      if (r.window === 'sea'){
+        var sill = 0.34, cap = 0.16, paneH = H - sill - cap;
+        addWall(rb(r.w, sill, T, wallMat, 0, sill / 2, -r.d / 2, 0.01)); addWall(rb(r.w, cap, T, wallMat, 0, H - cap / 2, -r.d / 2, 0.01));
+        g.add(box(r.w - 0.08, paneH, 0.03, M.glass, 0, sill + paneH / 2, -r.d / 2));
+        for (var k = 1; k < 3; k++) g.add(rb(0.045, paneH, 0.06, M.frame, -r.w / 2 + (k * r.w) / 3, sill + paneH / 2, -r.d / 2, 0.01));
+        g.add(rb(r.w - 0.08, 0.045, 0.06, M.frame, 0, sill + paneH / 2, -r.d / 2, 0.01));
+        trim(rb(r.w + 0.04, 0.04, T + 0.12, wallMat, 0, sill + 0.01, -r.d / 2, 0.01));
+        trim(rb(r.w + 0.02, 0.05, T + 0.02, wallMat, 0, 0.025, -r.d / 2, 0.01));
+      } else {
+        addWall(rb(r.w, H, T, wallMat, 0, H / 2, -r.d / 2, 0.01));
+        trim(rb(r.w + 0.02, 0.09, T + 0.03, wallMat, 0, 0.045, -r.d / 2, 0.01)); trim(rb(r.w + 0.03, 0.05, T + 0.04, wallMat, 0, H - 0.02, -r.d / 2, 0.01));
+      }
+      addWall(rb(T, H, r.d, wallMat, -r.w / 2, H / 2, 0, 0.01));
+      trim(rb(T + 0.03, 0.09, r.d + 0.02, wallMat, -r.w / 2, 0.045, 0, 0.01)); trim(rb(T + 0.04, 0.05, r.d + 0.03, wallMat, -r.w / 2, H - 0.02, 0, 0.01));
+      lab = makeLabel(r.label, wc, r.w); lab.position.set(0, H + 0.55, -r.d / 2 + 0.12);
+    } else {
+      lab = makeLabel(r.label, '#7fd4a0', r.w); lab.position.set(0, 0.95, -r.d / 2 + 0.1);
+    }
+    g.add(lab); LABELS.push({ s: lab, up: r.floor === '2f' });
+    var fu = furniture(r); fu.userData.fadeable = true; g.add(fu);
+    tg.add(g);
+  });
+
+  group.updateMatrixWorld(true);
+  group.traverse(function (o){
+    if (o.isMesh && o.material && !o.material.transparent){ o.castShadow = true; o.receiveShadow = true; }
+    else if (o.isMesh && o.material === M.water){ o.receiveShadow = true; }
+  });
+  var seen = new Set();
+  group.traverse(function (o){
+    if (!o.userData.fadeable) return;
+    o.traverse(function (m){
+      if (!m.isMesh || seen.has(m) || !m.material || m.material.transparent || m.userData.noFade) return;
+      seen.add(m);
+      var bx = new THREE.Box3().setFromObject(m), up = false, p = m;
+      var fy = 0; while (p){ if (p === g2){ fy = FH; break; } p = p.parent; } p = m;
+      if (bx.max.y - fy < 0.12) return;      // 地毯这类贴地的不虚化
+      while (p){ if (p === g2){ up = true; break; } p = p.parent; }
+      FADE.push({ m: m, orig: m.material, gm: null, c: bx.getCenter(new THREE.Vector3()), r: bx.getSize(new THREE.Vector3()).length() / 2, k: 1, t: 1, up: up });
+    });
+  });
+  g2.traverse(function (m){ if (m.isMesh){ m.userData.origMat = m.material; UPPER.push({ m: m, orig: m.material }); } });
+  LAMPC.forEach(function (e){
+    e.p = e.obj.getWorldPosition(new THREE.Vector3()); e.up = false;
+    var o = e.obj; while (o){ if (o === g2){ e.up = true; break; } o = o.parent; }
+  });
+  TM.last = -1; lastUK = 1;
+}
+// ── 视角：全景（房子 + 花园 + 大海一起看）/ 单层 / 点房间 / 贴脸 ───────────
+var VIEW_ALL = { cx: 7, cz: 8, span: 22 };
+function focusCfg(id){
+  if (id === 'all'){
+    return { theta: Math.PI * 0.25, phi: 0.6, radius: 34, span: 25.5, x: VIEW_ALL.cx, y: 0.3, z: VIEW_ALL.cz };
+  }
+  var b = floorBounds(id); if (!b) return null;
+  return { theta: Math.PI * 0.25, phi: 0.62, radius: b.span * 1.5, span: b.span * 1.55, x: b.cx, y: b.y + 0.5, z: b.cz };
+}
+function focusFloor(id, animated, dur){
+  var c = focusCfg(id); if (!c) return;
+  faceMode = false;
+  var fb = document.getElementById('bFace'); if (fb) fb.textContent = '🔍 看她';
+  setWallsFaded(false);
+  if (animated === false){
+    viewSpan = c.span; lookAt.set(c.x, c.y, c.z); orbit.radius = c.radius; orbit.theta = c.theta; orbit.phi = c.phi;
+    camTween = null; applyOrbit(); resize();
+  } else startTween(c, dur || 1.3);
+}
+function goFloor(id){
+  floorId = id;
+  focusFloor(id, true);
+  renderFloorButtons();
+}
+
+// 二楼显隐：只看一楼 / 花园时二楼变成淡淡的幻影，不挡着里面
+var UKt = 0.1, UKc = 1;
+function upperWanted(){
+  if (faceMode && lastRoom && lastRoom.floor === '2f') return 1;
+  if (floorId === '2f') return 1;
+  if (floorId === 'all' && lastRoom && lastRoom.floor === '2f') return 1;
+  return 0.08;
+}
+var GHOSTS = new Map();
+function ghostOf(orig){
+  var g = GHOSTS.get(orig);
+  if (!g){ g = orig.clone(); g.transparent = true; g.depthWrite = false; GHOSTS.set(orig, g); }
+  return g;
+}
+function updateUpper(dt){
+  UKt = upperWanted();
+  UKc += (UKt - UKc) * (1 - Math.exp(-4.5 * dt));
+  if (Math.abs(UKt - UKc) < 0.004) UKc = UKt;
+  if (Math.abs(UKc - lastUK) < 0.002 && lastUK === UKc) return;
+  lastUK = UKc;
+  var solid = UKc > 0.985;
+  GHOSTS.forEach(function (g){ g.opacity = UKc; });
+  for (var i = 0; i < UPPER.length; i++){
+    var u = UPPER[i];
+    var mat = solid ? u.orig : ghostOf(u.orig);
+    if (u.m.material !== mat && !(u.m.userData.fadeOn)) u.m.material = mat;
+    u.m.castShadow = UKc > 0.5 && !(u.orig.transparent);
+  }
+  for (i = 0; i < LABELS.length; i++) if (LABELS[i].up) LABELS[i].s.userData.upk = UKc;
+}
+
+// 贴脸时：挡在镜头和她之间的家具 / 树 / 栏杆变成虚影；远处的景由 CSS 景深虚化
+var _dir = new THREE.Vector3(), _v = new THREE.Vector3(), _hp = new THREE.Vector3(), FOCUS_K = 0;
+function updateFocus(dt, now){
+  var want = faceMode ? 1 : 0;
+  FOCUS_K += (want - FOCUS_K) * (1 - Math.exp(-4 * dt));
+  if (Math.abs(want - FOCUS_K) < 0.003) FOCUS_K = want;
+  var dof = document.getElementById('dof');
+  // 不再用 CSS 全屏虚化：镜头已经贴到脸前，背景自然出画了。
+  if (dof && dof.style.opacity !== '0') dof.style.opacity = '0';
+  for (var i = 0; i < LABELS.length; i++){
+    var L = LABELS[i], up = L.s.userData.upk === undefined ? 1 : L.s.userData.upk;
+    L.s.material.opacity = (1 - FOCUS_K) * (L.up ? up : 1) * (1 - 0.0);
+    L.s.visible = L.s.material.opacity > 0.02;
+  }
+  var ms = Math.max(0.5, viewSpan * 0.032); if (mark) mark.scale.set(ms, ms, 1);
+  if (halo) halo.scale.setScalar(Math.max(1, viewSpan * 0.06));
+  GLOW_MAT.opacity = TM.n * 0.7 * (1 - 0.75 * FOCUS_K);
+  if (mark) { mark.visible = FOCUS_K < 0.5; mark.position.y = 2.05 + Math.sin(now * 0.004) * 0.08; mark.material.opacity = 1 - FOCUS_K * 2; }
+  if (halo){ halo.material.opacity = 0.35 + 0.2 * Math.sin(now * 0.003) + FOCUS_K * 0.25; }
+  if (!FADE.length) return;
+  camera.getWorldDirection(_dir);
+  _hp.set(avatar.position.x, avatar.position.y + 0.85, avatar.position.z);
+  for (var j = 0; j < FADE.length; j++){
+    var f = FADE[j], t = 1;
+    if (FOCUS_K > 0.05 && (!f.up || UKc > 0.98)){
+      _v.copy(f.c).sub(_hp);
+      var along = _v.dot(_dir);                         // <0 表示比她更靠近镜头
+      _v.addScaledVector(_dir, -along);
+      if (along < 0.15 && _v.length() < f.r + 0.6) t = 0.1;
+    }
+    var tt = 1 - (1 - t) * FOCUS_K;
+    if (Math.abs(f.k - tt) > 0.003){
+      f.k += (tt - f.k) * (1 - Math.exp(-9 * dt));
+      if (f.k > 0.985){ f.k = 1; f.m.material = (f.up && UKc <= 0.985) ? ghostOf(f.orig) : f.orig; f.m.userData.fadeOn = false; f.m.castShadow = true; }
+      else {
+        if (!f.gm){ f.gm = f.orig.clone(); f.gm.transparent = true; f.gm.depthWrite = false; }
+        f.gm.opacity = f.k; f.m.material = f.gm; f.m.userData.fadeOn = true; f.m.castShadow = false;
+      }
+    }
+  }
+}
+// ── 楼层按钮：滑块在按钮之间滑动 ────────────────────────────────────
+var floorSlider = document.createElement('div'); floorSlider.className = 'slider';
+var floorSig = '';
+function moveSlider(){
+  var on = document.querySelector('#floors button.on');
+  if (!on) return;
+  floorSlider.style.width = on.offsetWidth + 'px';
+  floorSlider.style.transform = 'translateX(' + on.offsetLeft + 'px)';
+}
+function renderFloorButtons(){
+  var host = document.getElementById('floors');
+  var herFloor = (lastRoom && lastRoom.floor) || '';
+  var sig = floorId + '|' + herFloor + '|' + DATA.floors.map(function (f){ return f.id + f.label; }).join(',');
+  if (sig === floorSig) return;
+  floorSig = sig;
+  Array.prototype.slice.call(host.querySelectorAll('button')).forEach(function (b){ host.removeChild(b); });
+  if (!floorSlider.parentNode) host.appendChild(floorSlider);
+  [{ id: 'all', label: '全景' }].concat(DATA.floors).forEach(function (f){
+    var b = document.createElement('button');
+    b.textContent = f.label;
+    if (f.id === floorId) b.classList.add('on');
+    if (f.id === herFloor) b.classList.add('dot');
+    b.addEventListener('click', function (){ autoFollow = false; goFloor(f.id); });
+    host.appendChild(b);
+  });
+  requestAnimationFrame(moveSlider);
+}
+addEventListener('resize', moveSlider);
+
+// ── 她 ──────────────────────────────────────────────────────────────
+var avatar = new THREE.Group();
+// 占位小人：身体 + 头 + 头发。模型回来后整块替换，但比例（约 1.2 高）先给她留好。
+// 设定上她是女孩子——占位也得让人一眼看出是个人，而不是一根柱子。
+var body = new THREE.Mesh(
+  new THREE.CapsuleGeometry(0.25, 0.40, 6, 14),
+  new THREE.MeshLambertMaterial({ color: 0x6f9ad6, emissive: 0x14243c })
+);
+body.position.y = 0.52;
+avatar.add(body);
+
+var head = new THREE.Mesh(
+  new THREE.SphereGeometry(0.20, 18, 14),
+  new THREE.MeshLambertMaterial({ color: 0xf0d9c8 })
+);
+head.position.y = 0.99;
+avatar.add(head);
+
+// 头发：半球盖住上半颗头，颜色取她形象的深蓝
+var hair = new THREE.Mesh(
+  new THREE.SphereGeometry(0.215, 18, 14, 0, Math.PI * 2, 0, Math.PI * 0.58),
+  new THREE.MeshLambertMaterial({ color: 0x2c4270 })
+);
+hair.position.y = 1.00;
+avatar.add(hair);
+
+// 一小截鲸鱼尾，别太抢眼，只是让她不完全是个人形积木
+var tail = new THREE.Mesh(
+  new THREE.ConeGeometry(0.11, 0.26, 10),
+  new THREE.MeshLambertMaterial({ color: 0x2c4270 })
+);
+tail.position.set(0, 0.40, 0.22);
+tail.rotation.x = Math.PI * 0.62;
+avatar.add(tail);
+
+var shadow = new THREE.Mesh(
+  new THREE.CircleGeometry(0.3, 24),
+  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 })
+);
+shadow.rotation.x = -Math.PI / 2;
+shadow.position.y = 0.012;
+avatar.add(shadow);
+scene.add(avatar);
+// 她的存在感：脚下一圈柔光 + 头顶一枚小水滴标记（全景里一眼找到她），贴脸时给她补一盏柔光
+var halo = null, mark = null;
+var herLight = new THREE.PointLight(0xfff0e0, 0, 5, 2);
+herLight.position.set(0, 1.9, 1.5);
+avatar.add(herLight);
+(function (){
+  var c = document.createElement('canvas'); c.width = c.height = 128;
+  var g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 4, 64, 64, 62);
+  gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(0.62, 'rgba(255,196,214,.0)'); gr.addColorStop(0.78, 'rgba(255,188,208,.85)'); gr.addColorStop(0.9, 'rgba(255,214,226,.25)'); gr.addColorStop(1, 'rgba(255,214,226,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  var t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  halo = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.5), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.5 }));
+  halo.rotation.x = -Math.PI / 2; halo.position.y = 0.025; halo.renderOrder = 2; avatar.add(halo);
+  var m = document.createElement('canvas'); m.width = m.height = 96;
+  var h = m.getContext('2d');
+  h.shadowColor = 'rgba(120,60,90,.35)'; h.shadowBlur = 8;
+  h.fillStyle = '#ff8fb0'; h.strokeStyle = '#fff'; h.lineWidth = 6;
+  h.beginPath(); h.moveTo(48, 84); h.bezierCurveTo(10, 50, 14, 14, 48, 14); h.bezierCurveTo(82, 14, 86, 50, 48, 84); h.closePath(); h.stroke(); h.fill();
+  h.shadowBlur = 0; h.fillStyle = '#fff'; h.beginPath(); h.arc(48, 40, 11, 0, 6.3); h.fill();
+  var mt = new THREE.CanvasTexture(m); mt.colorSpace = THREE.SRGBColorSpace;
+  mark = new THREE.Sprite(new THREE.SpriteMaterial({ map: mt, transparent: true, depthTest: false }));
+  mark.scale.set(0.5, 0.5, 1); mark.position.y = 2.05; mark.renderOrder = 12; avatar.add(mark);
+})();
+
+// ── 角色模型（VRM 或普通 glb 都吃；没有模型就留占位小人）──────────────
+// 加载失败不影响任何功能：占位小人还在，位置照样跟着 state 走。
+var vrm = null;
+var motion = null;
+var vrmReady = false;
+// 默认走 VRM（自带骨骼、表情、头发/裙摆/胸部物理）；?model=glb 可切回 Tripo 那个写实模型做对比。
+var MODEL_FULL = '/media/space/models/her.vrm';
+// 默认用精简版：5 张 2048² 贴图降到 1024²，文件 18.8MB → 12.0MB，
+// 解码量少一大截（2048 的 RGBA 是 16MB/张，四张就 64MB 显存 + 解码时间）。
+// 结构已校验：节点/accessor/材质/骨骼/表情数与原版完全一致。
+// &model=full 可切回原版，&model=glb 切那个 Tripo 的写实模型。
+var MODEL_FILE = PARAMS.get('model') === 'glb'
+  ? '/media/space/models/her.glb'
+  : PARAMS.get('model') === 'full'
+    ? MODEL_FULL
+    : '/media/space/models/her_lite.vrm';
+
+function fitModel(root){
+  // 按真实高度缩放，落到地面（场景里墙只有 1.12，她略高一点）
+  var box = new THREE.Box3().setFromObject(root);
+  var h = box.max.y - box.min.y;
+  var targetH = 1.55;
+  if (h > 0.001 && h < 1000) root.scale.setScalar(targetH / h);
+  box.setFromObject(root);
+  root.position.y -= box.min.y;
+}
+
+// ── 程序化待机 ──────────────────────────────────────────────────────
+// VRM 只带物理（头发/裙子），身体本身没有任何动画 —— 不写这段她就一直僵着。
+// 关键：必须在**原始值上叠加**，不能直接赋值。髋骨原本的 y 是站立高度（约 1m），
+// 直接写成 hips.position.y = 0.01 等于把她整个人往下拽 1 米 —— 就卡进地板了。
+var idle = { ok: false, base: null };
+var prevPos = new THREE.Vector3();   // 上一帧位置，用来算实际速度
+
+function setupIdle(v){
+  try {
+    var h = v.humanoid;
+    if (!h || typeof h.getNormalizedBoneNode !== 'function') return;
+    idle.hips = h.getNormalizedBoneNode('hips');
+    idle.spine = h.getNormalizedBoneNode('spine');
+    idle.chest = h.getNormalizedBoneNode('chest');
+    idle.head = h.getNormalizedBoneNode('head');
+    idle.lua = h.getNormalizedBoneNode('leftUpperArm');
+    idle.rua = h.getNormalizedBoneNode('rightUpperArm');
+    idle.ok = !!(idle.hips && idle.spine);
+    if (!idle.ok) return;
+    idle.base = {
+      hipsY: idle.hips.position.y,
+      hipsZ: idle.hips.position.z,
+      hipsRZ: idle.hips.rotation.z,
+      spineX: idle.spine.rotation.x,
+      chestX: idle.chest ? idle.chest.rotation.x : 0,
+      headX: idle.head ? idle.head.rotation.x : 0,
+      headY: idle.head ? idle.head.rotation.y : 0,
+      luaZ: idle.lua ? idle.lua.rotation.z : 0,
+      ruaZ: idle.rua ? idle.rua.rotation.z : 0
+    };
+    console.log('[space] idle 已绑定，髋原始高度 =', idle.base.hipsY.toFixed(3));
+    setupLegs(v);
+  } catch (e) {
+    console.warn('[space] idle 绑定异常', e);
+  }
+}
+
+function updateIdle(t){
+  if (!idle.ok || !idle.base) return;
+  var b = idle.base;
+  var breath = Math.sin(t * 1.15);
+  var sway = Math.sin(t * 0.42);
+  var look = Math.sin(t * 0.23);
+  // 全部是 base + 偏移，绝不覆盖
+  idle.hips.position.y = b.hipsY + breath * 0.008;
+  idle.hips.rotation.z = b.hipsRZ + sway * 0.020;
+  idle.spine.rotation.x = b.spineX + breath * 0.012;
+  if (idle.chest) idle.chest.rotation.x = b.chestX + Math.sin(t * 1.15 + 0.6) * 0.014;
+  if (idle.head) {
+    idle.head.rotation.y = b.headY + look * 0.15;
+    idle.head.rotation.x = b.headX + Math.sin(t * 0.31) * 0.035;
+  }
+  // 手臂放下：她的静止姿态是 **T-pose**（双臂平举），不放下来就一直张着。
+  // 实测（VRM 骨骼 FK）：左臂 z=-1.25 / 右臂 z=+1.25 时手正好垂在大腿外侧。
+  // 原来这里是 +0.10 / -0.10 —— 那个方向是**往上抬**，等于让手臂张得更开，
+  // 这就是「手臂僵硬」的真正原因。&arm=N 仍然可以现场微调（正数更贴身）。
+  var armDrop = Number(PARAMS.get('arm') || 0);
+  if (idle.lua) idle.lua.rotation.z = b.luaZ - 1.25 - armDrop + breath * 0.010;
+  if (idle.rua) idle.rua.rotation.z = b.ruaZ + 1.25 + armDrop - breath * 0.010;
+  // 腿回到站立（如果刚从走路切回来）
+  if (idle.lul) idle.lul.rotation.x = (idle.base.lulX || 0);
+  if (idle.rul) idle.rul.rotation.x = (idle.base.rulX || 0);
+  if (idle.lll) idle.lll.rotation.x = (idle.base.lllX || 0);
+  if (idle.rll) idle.rll.rotation.x = (idle.base.rllX || 0);
+}
+
+// ── 程序化走路 ──────────────────────────────────────────────────────
+// 没有动画文件，就用正弦波驱动大腿/小腿/手臂。不是专业动作，但"腿在迈"和"滑行"
+// 是两种观感。步频跟着移动速度走，停下会自动回到 idle。
+var walkPhase = 0;
+
+function setupLegs(v){
+  try {
+    var h = v.humanoid;
+    var g = function (name) { return h.getNormalizedBoneNode(name); };
+    idle.lul = g('leftUpperLeg');
+    idle.rul = g('rightUpperLeg');
+    idle.lll = g('leftLowerLeg');
+    idle.rll = g('rightLowerLeg');
+    idle.lua = idle.lua || g('leftUpperArm');
+    idle.rua = idle.rua || g('rightUpperArm');
+    idle.lal = g('leftLowerArm');
+    idle.ral = g('rightLowerArm');
+    // 记录腿和手臂的原始角度
+    idle.base.lulX = idle.lul ? idle.lul.rotation.x : 0;
+    idle.base.rulX = idle.rul ? idle.rul.rotation.x : 0;
+    idle.base.lllX = idle.lll ? idle.lll.rotation.x : 0;
+    idle.base.rllX = idle.rll ? idle.rll.rotation.x : 0;
+    idle.base.luaX = idle.lua ? idle.lua.rotation.x : 0;
+    idle.base.ruaX = idle.rua ? idle.rua.rotation.x : 0;
+    idle.base.lalX = idle.lal ? idle.lal.rotation.x : 0;
+    idle.base.ralX = idle.ral ? idle.ral.rotation.x : 0;
+  } catch (e) { console.warn('[space] 腿骨绑定失败', e); }
+}
+
+function updateWalk(dt, speed){
+  if (!idle.ok || !idle.base) return;
+  var b = idle.base;
+  // 步频跟着速度走；速度是每秒移动的米数
+  walkPhase += dt * Math.min(9, 4.2 + speed * 2.2);
+  var s = Math.sin(walkPhase);
+  var c = Math.cos(walkPhase);
+  var amp = Math.min(0.62, 0.28 + speed * 0.10);
+
+  if (idle.lul) idle.lul.rotation.x = b.lulX + s * amp;
+  if (idle.rul) idle.rul.rotation.x = b.rulX - s * amp;
+  // 膝盖只往后弯：正弦半波，避免小腿往前折
+  if (idle.lll) idle.lll.rotation.x = b.lllX + Math.max(0, -s) * amp * 1.15;
+  if (idle.rll) idle.rll.rotation.x = b.rllX + Math.max(0, s) * amp * 1.15;
+  // 手臂：先把手臂放下来（z），再用 y 前后摆。
+  // 绕 x 转是绕「手臂长轴」自转 —— 手的位置根本不变，原来那几行等于白写。
+  if (idle.lua) { idle.lua.rotation.z = -1.25 + b.luaZ; idle.lua.rotation.y = -s * amp * 0.55; }
+  if (idle.rua) { idle.rua.rotation.z = 1.25 + b.ruaZ; idle.rua.rotation.y = s * amp * 0.55; }
+  if (idle.lal) idle.lal.rotation.y = -Math.max(0, -s) * 0.20;
+  if (idle.ral) idle.ral.rotation.y = Math.max(0, s) * 0.20;
+  // 走路时上身轻微上下 + 侧倾，比纯腿摆更像人
+  if (idle.hips) {
+    idle.hips.position.y = b.hipsY + Math.abs(s) * 0.022 - 0.011;
+    idle.hips.rotation.z = b.hipsRZ + c * 0.035;
+  }
+  if (idle.spine) idle.spine.rotation.x = b.spineX + 0.03;
+}
+
+// 画面取样：把当前帧缩到 64x40 读像素，直接报"看到的颜色"。
+// 贴图缺失/被光冲爆/颜色空间错，都能量化出来，不用靠肉眼猜。
+function frameStats(){
+  try {
+    renderer.render(scene, activeCam);
+    var c = document.createElement('canvas');
+    c.width = 64; c.height = 40;
+    var g = c.getContext('2d');
+    g.drawImage(renderer.domElement, 0, 0, 64, 40);
+    var d = g.getImageData(0, 0, 64, 40).data;
+    var n = 64 * 40, r = 0, gg = 0, b = 0, white = 0, hist = new Map();
+    for (var i = 0; i < n; i++){
+      var o = i * 4, R = d[o], G = d[o + 1], B = d[o + 2];
+      r += R; gg += G; b += B;
+      if (R > 232 && G > 232 && B > 232) white++;
+      var k = ((R >> 5) << 6) | ((G >> 5) << 3) | (B >> 5);
+      hist.set(k, (hist.get(k) || 0) + 1);
+    }
+    var top = Array.from(hist.entries()).sort(function (x, y){ return y[1] - x[1]; }).slice(0, 4).map(function (e){
+      var k = e[0];
+      var R = ((k >> 6) & 7) * 32 + 16, G = ((k >> 3) & 7) * 32 + 16, B = (k & 7) * 32 + 16;
+      var hx = function (x){ return ('0' + x.toString(16)).slice(-2); };
+      return '#' + hx(R) + hx(G) + hx(B) + ':' + (e[1] / n * 100).toFixed(0) + '%';
+    }).join(' ');
+    return '画面平均 rgb(' + (r / n | 0) + ',' + (gg / n | 0) + ',' + (b / n | 0) + ') 纯白 ' + (white / n * 100).toFixed(1) + '%\n  主色 ' + top;
+  } catch (e) { return '画面取样失败: ' + e.message; }
+}
+
+// ── 贴图探针：证明浏览器到底能不能解码 blob:/data: 图片 ──────────────
+// GLTFLoader 把内嵌贴图做成 blob URL 再交给 <img>；页面 CSP 若没放行 blob:，
+// 图片全被静默拦掉，材质就没有 map —— 看起来就是"白模"。
+var PROBE = '（还没跑完）';
+(function textureProbe(){
+  var PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  var res = [];
+  function toBlob(){
+    var bin = atob(PNG), a = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+    return new Blob([a], { type: 'image/png' });
+  }
+  var steps = [];
+  steps.push(function (done){
+    var im = new Image();
+    var fin = false, t = setTimeout(function (){ if (!fin){ fin = true; res.push('data-URL=超时'); done(); } }, 2000);
+    im.onload = function (){ if (fin) return; fin = true; clearTimeout(t); res.push('data-URL=OK ' + im.width + 'x' + im.height); done(); };
+    im.onerror = function (){ if (fin) return; fin = true; clearTimeout(t); res.push('data-URL=被拦或解码失败'); done(); };
+    im.src = 'data:image/png;base64,' + PNG;
+  });
+  steps.push(function (done){
+    var im = new Image();
+    var fin = false, t = setTimeout(function (){ if (!fin){ fin = true; res.push('blob-URL=超时'); done(); } }, 2000);
+    im.onload = function (){ if (fin) return; fin = true; clearTimeout(t); res.push('blob-URL=OK ' + im.width + 'x' + im.height); done(); };
+    im.onerror = function (){ if (fin) return; fin = true; clearTimeout(t); res.push('blob-URL=被拦或解码失败'); done(); };
+    im.src = URL.createObjectURL(toBlob());
+  });
+  steps.push(function (done){
+    if (!window.createImageBitmap){ res.push('createImageBitmap=没有'); done(); return; }
+    var fin = false, t = setTimeout(function (){ if (!fin){ fin = true; res.push('createImageBitmap=超时'); done(); } }, 2000);
+    createImageBitmap(toBlob()).then(function (b){
+      if (fin) return; fin = true; clearTimeout(t); res.push('createImageBitmap=OK ' + b.width + 'x' + b.height); done();
+    }, function (e){
+      if (fin) return; fin = true; clearTimeout(t); res.push('createImageBitmap=失败 ' + ((e && e.name) || '')); done();
+    });
+  });
+  (function next(i){
+    if (i >= steps.length){ PROBE = res.join(' | '); return; }
+    steps[i](function (){ next(i + 1); });
+  })(0);
+})();
+
+function debugInfo(v, ver){
+  try {
+    var lines = [];
+    lines.push('贴图探针 ' + PROBE);
+    lines.push('tone=' + renderer.toneMapping + ' outCS=' + renderer.outputColorSpace + ' light=' + LIGHT_BOOST);
+    lines.push(frameStats());
+    lines.push('VRM 版本 ' + ver + ' | rotation.y = ' + v.scene.rotation.y.toFixed(2));
+    lines.push('idle.ok = ' + idle.ok + (idle.base ? ' | 髋 y = ' + idle.base.hipsY.toFixed(3) : ''));
+    if (idle.lua) lines.push('左臂 rotation.z = ' + idle.lua.rotation.z.toFixed(3));
+    if (idle.head) lines.push('头骨骼: 有');
+    else lines.push('头骨骼: 没有');
+    var meshes = 0, mats = [];
+    v.scene.traverse(function (o){
+      if (!o.isMesh) return;
+      meshes++;
+      var arr = Array.isArray(o.material) ? o.material : [o.material];
+      arr.forEach(function (m){
+        if (!m) return;
+        var im = m.map && m.map.image;
+        var mi = m.map ? ('map=Y ' + (im ? (im.width + 'x' + im.height) : '图像没加载') + ' ' + (m.map.colorSpace || '-')) : 'map=N';
+        mats.push((m.name || m.type).slice(0, 16) + ' ' + mi + ' color=' + (m.color ? m.color.getHexString() : '?'));
+      });
+    });
+    lines.push('网格 ' + meshes + ' 个，材质 ' + mats.length + ' 个');
+    mats.slice(0, 6).forEach(function (s){ lines.push('  ' + s); });
+    if (mats.length > 6) lines.push('  …共 ' + mats.length);
+    if (LOGS.length){
+      lines.push('— 浏览器日志 —');
+      LOGS.slice(-8).forEach(function (s){ lines.push(s); });
+    }
+    if (motion) { try { lines.push(motion.info()); } catch (e) {} }
+    dbg(lines.join('\n'));
+  } catch (e) { dbg('诊断失败: ' + e.message); }
+}
+
+// ── 头特写取样（&probe=2）：把屋子藏起来、背景刷成洋红，只留她，
+// 然后数像素回答「贴图到底上没上」。洋红是天然抠像色，一眼一个准。
+function probeHead(){
+  try {
+    if (!vrm) { dbg('还没加载完'); return; }
+    group.visible = false;
+    scene.background = new THREE.Color(0xff00ff);
+    var hp = new THREE.Vector3();
+    (idle.head || vrm.scene).getWorldPosition(hp);
+    viewSpan = 0.5;
+    lookAt.set(hp.x, hp.y, hp.z);
+    orbit.theta = 0; orbit.phi = 0.08; orbit.radius = 6;
+    applyOrbit(); resize();
+    renderer.render(scene, activeCam);
+    var c = document.createElement('canvas');
+    c.width = 96; c.height = 96;
+    var g = c.getContext('2d');
+    g.drawImage(renderer.domElement, 0, 0, 96, 96);
+    var d = g.getImageData(0, 0, 96, 96).data;
+    var n = 96 * 96, cnt = 0, r = 0, gg = 0, b = 0, blue = 0, white = 0, skin = 0;
+    for (var i = 0; i < n; i++){
+      var o = i * 4, R = d[o], G = d[o + 1], B = d[o + 2];
+      if (R > 200 && G < 80 && B > 200) continue;   // 洋红背景，跳过
+      cnt++; r += R; gg += G; b += B;
+      if (B > R + 25 && B > 90) blue++;             // 蓝紫：头发/眉毛
+      if (R > 232 && G > 232 && B > 232) white++;   // 全白：贴图丢了或被光冲爆
+      if (R > 190 && G > 150 && B > 130 && R > B) skin++;  // 肤色 #ffeedd 一族
+    }
+    if (!cnt) { dbg('头特写取样：一帧里没找到她'); return; }
+    dbg('头特写取样\n模型占画面 ' + (cnt / n * 100).toFixed(1) + '%\n'
+      + '平均 rgb(' + (r / cnt | 0) + ',' + (gg / cnt | 0) + ',' + (b / cnt | 0) + ')\n'
+      + '蓝 ' + (blue / cnt * 100).toFixed(1) + '%  近白 ' + (white / cnt * 100).toFixed(1) + '%  肤色 ' + (skin / cnt * 100).toFixed(1) + '%');
+  } catch (e) { dbg('特写取样失败: ' + e.message); }
+}
+
+function loadModel(){
+  var loader = new GLTFLoader();
+  loader.register(function (parser){ return new VRMLoaderPlugin(parser); });
+  loader.load(MODEL_FILE, function (gltf){
+    try {
+      var v = gltf.userData.vrm;
+      if (v){
+        // VRM：自带骨骼、表情、头发物理
+        if (VRMUtils && VRMUtils.removeUnnecessaryVertices) VRMUtils.removeUnnecessaryVertices(gltf.scene);
+        if (VRMUtils && VRMUtils.combineSkeletons) VRMUtils.combineSkeletons(gltf.scene);
+        v.scene.traverse(function (o){ if (o.isMesh) o.frustumCulled = false; });
+        // 朝向：VRM 1.0 面朝 +Z（正对镜头），VRM 0.x 面朝 -Z 才需要转 180°。
+        // 版本号在 v.meta.metaVersion 上，不是 v.metaVersion。
+        // 如果还是背对，地址后加 &flip=1 强制翻面（有些模型不遵守规范）。
+        var ver = String((v.meta && v.meta.metaVersion) || '0');
+        var baseRot = ver === '1' ? 0 : Math.PI;
+        v.scene.rotation.y = PARAMS.get('flip') === '1' ? baseRot + Math.PI : baseRot;
+        console.log('[space] VRM 版本', ver, '→ rotation.y =', v.scene.rotation.y, '| flip =', PARAMS.get('flip'));
+        fitModel(v.scene);
+        v.scene.traverse(function (o){ if (o.isMesh){ o.castShadow = true; } });
+        avatar.add(v.scene);
+        vrm = v;
+        setupIdle(v);
+        // 动作系统：坐 / 看书 / 玩手机 / 泡水。失败不影响画面，只是她还站着。
+        try {
+          motion = createMotion({
+            THREE: THREE, vrm: v, avatar: avatar, idle: idle, renderer: renderer, params: PARAMS,
+            updateIdle: updateIdle, updateWalk: updateWalk,
+            setTarget: function (x, z){ targetPos.set(x, 0, z); },
+            wpos: wpos, DATA: DATA
+          });
+          motion.setState(lastState);
+        } catch (e) { console.warn('[space] 动作系统没起来', e); }
+        // 诊断要额外渲染两帧 + 两次 getImageData（GPU 强制同步），
+        // 平时别跑 —— 只在 &debug=1 时才做。
+        if (PARAMS.get('debug') === '1') debugInfo(v, ver);
+        if (PARAMS.get('posetest') === '1') setTimeout(function (){ try { if (motion) dbg(motion.testAll()); } catch (e) { dbg('姿势测试失败: ' + e.message); } }, 900);
+        // 首帧时她还没被放到房间里，画面取样会取到空场景；等一拍再看一次。
+        setTimeout(function (){ try { if (PARAMS.get('debug') === '1') debugInfo(v, ver); } catch (e) {} }, 1500);
+        if (PARAMS.get('probe') === '2') setTimeout(probeHead, 2600);
+      } else {
+        // 普通 glb（Tripo 这类）：只有网格，没骨骼
+        gltf.scene.traverse(function (o){
+          if (!o.isMesh) return;
+          o.frustumCulled = false;
+          // Tripo 默认 metallicFactor=1，她不是金属件；不改的话整张脸会被"金属反射"吃掉，
+          // 看起来就是白模。顺手把粗糙度抬一点，避免塑料感。
+          var mats = Array.isArray(o.material) ? o.material : [o.material];
+          mats.forEach(function (m){
+            if (!m) return;
+            if ('metalness' in m) m.metalness = 0.0;
+            if ('roughness' in m && m.roughness > 0.85) m.roughness = 0.7;
+            if ('envMapIntensity' in m) m.envMapIntensity = 1.1;
+            m.needsUpdate = true;
+          });
+        });
+        gltf.scene.rotation.y = Math.PI;
+        fitModel(gltf.scene);
+        avatar.add(gltf.scene);
+      }
+      vrmReady = true;
+      body.visible = false; head.visible = false; hair.visible = false; tail.visible = false;
+      warn('');
+      console.log('[space] 模型已加载' + (v ? '（VRM）' : '（glb）'));
+    } catch (e) {
+      warn('模型处理失败：' + (e && e.message ? e.message : e));
+    }
+  }, function (p){
+    if (p && p.total) hDoing.textContent = '模型加载中 ' + Math.round(p.loaded / p.total * 100) + '%';
+    else if (p) hDoing.textContent = '模型加载中 ' + Math.round(p.loaded / 1024 / 1024) + 'MB';
+  }, function (err){
+    // 精简版万一加载失败 → 自动退回原版，只退一次，绝不白屏
+    if (MODEL_FILE !== MODEL_FULL){
+      console.warn('[space] 精简模型加载失败，退回原版', err);
+      MODEL_FILE = MODEL_FULL;
+      loadModel();
+      return;
+    }
+    warn('模型加载失败（占位小人继续用）：' + (err && err.message ? err.message : err));
+  });
+}
+
+var targetPos = new THREE.Vector3(0, 0, 0);
+var placed = false;
+var lastRoom = null;
+var lastState = null;
+
+// ── 她手上那本书 ─────────────────────────────────────────────────────
+// 书名来自《读书》插件（/api/space/state 的 book 字段）；这里只画一本实体书，
+// 位置每帧贴着她的胸口，所以走到哪个房间它都跟着——「被她带着」。
+var handBook = null;
+function ensureHandBook(){
+  if (handBook) return handBook;
+  var g = new THREE.Group();
+  var paper = new THREE.MeshStandardMaterial({ color: 0xf2e8d8, roughness: 0.95 });
+  var cover = new THREE.MeshStandardMaterial({ color: 0x7b4f36, roughness: 0.7 });
+  var pages = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.022, 0.26), paper);
+  var back = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.007, 0.27), cover);
+  back.position.y = -0.013;
+  var spine = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.034, 0.27), cover);
+  spine.position.set(-0.097, 0, 0);
+  g.add(pages, back, spine);
+  g.rotation.x = -0.22;
+  g.visible = false;
+  g.userData.cover = cover;
+  scene.add(g);
+  handBook = g;
+  return g;
+}
+function isReadingNow(st){
+  if (!st) return false;
+  var place = String(st.place || '');
+  var doing = String((st.detail || '') + ' ' + (st.doing || ''));
+  return /书房/.test(place) || /看书|读书|翻书|阅读/.test(doing);
+}
+/** 在书房是摊在桌上；在别处是捧在胸前——跟 motion.js 的 read / read_hold 两种姿势对应。 */
+function readingMode(st){
+  if (!st) return '';
+  if (/书房/.test(String(st.place || ''))) return 'desk';
+  var doing = String((st.detail || '') + ' ' + (st.doing || ''));
+  return /看书|读书|翻书|阅读/.test(doing) ? 'hold' : '';
+}
+function syncHandBook(book, st){
+  var g = ensureHandBook();
+  // 不在看就不摆书：她平时站在卧室、客厅、花园时手上不该凭空有本书
+  if (!book || !book.title || !isReadingNow(st)){ g.visible = false; return; }
+  g.visible = true;
+  // 读到第几章换一次封面色：翻开新章一眼能看出来
+  var hue = 0.055 + (((book.chapter || 0) * 37) % 50) / 360;
+  try { g.userData.cover.color.setHSL(hue, 0.42, 0.34); } catch (e) {}
+  g.userData.title = book.title;
+}
+
+// ── 书房书架：书脊来自《读书》插件的书目 ─────────────────────────────
+// 位置是 rooms.json 里 study(x=7,z=2.5) 加上书架在房间局部坐标 (1.85,-2.2)。
+// 书名只用来定颜色和厚度，字太小画在书脊上也看不清，所以不写字。
+var shelfGroup = null, shelfKey = '';
+function buildShelf(books){
+  var list = books || [];
+  var key = list.map(function (b){ return b.title; }).join('|');
+  if (key === shelfKey) return;
+  shelfKey = key;
+  if (shelfGroup){ scene.remove(shelfGroup); shelfGroup = null; }
+  if (!list.length) return;
+  var g = new THREE.Group();
+  g.position.set(7 + 1.85, 0.07, 2.5 - 2.2);
+  var n = Math.min(list.length, 10);
+  for (var i = 0; i < n; i++){
+    var t = String(list[i].title || '');
+    var seed = 0;
+    for (var k = 0; k < t.length; k++) seed = (seed * 31 + t.charCodeAt(k)) % 360;
+    var mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(seed / 360, 0.45, 0.42),
+      roughness: 0.8
+    });
+    var hh = 0.2 + ((i * 7) % 5) * 0.012;
+    var m = new THREE.Mesh(new THREE.BoxGeometry(0.045, hh, 0.2), mat);
+    m.position.set(-0.42 + i * 0.075, 0.1 + hh / 2, 0);
+    g.add(m);
+  }
+  scene.add(g);
+  shelfGroup = g;
+}
+
+function resolveRoom(state){
+  if (!state || !state.place) return null;
+  var want = String(state.place).trim();
+  if (!want) return null;
+  var hit = roomIndex.get(want);
+  if (hit) return hit;
+  for (var i = 0; i < DATA.rooms.length; i++){
+    var r = DATA.rooms[i];
+    if ((r.aliases || []).indexOf(want) >= 0) return r;
+  }
+  return null;
+}
+
+function placeAvatar(){
+  var room = resolveRoom(lastState);
+  lastRoom = room;
+  avatar.visible = true;
+  var p = room ? wpos(room) : { x: DATA.outside.x + GOFF.x, y: 0, z: DATA.outside.z + GOFF.z };
+  targetPos.set(p.x, p.y, p.z);
+  if (!placed) { avatar.position.copy(targetPos); placed = true; }
+}
+
+// ── 读状态 ──────────────────────────────────────────────────────────
+async function load(force){
+  try {
+    var url = '/api/space/state' + (TOKEN ? '?token=' + encodeURIComponent(TOKEN) : '');
+    var res = await fetch(url, { cache: 'no-store' });
+    if (res.status === 401 || res.status === 403){ warn('缺少或无效的控制台令牌：' + location.pathname + '?token=…'); return; }
+    if (!res.ok){ warn('读取状态失败（HTTP ' + res.status + '）'); return; }
+    var j = await res.json();
+
+    var first = !DATA.rooms.length;
+    if (first){
+      DATA.floors = (j.rooms && j.rooms.floors) || [{ id: '1f', label: '一楼' }];
+      DATA.rooms = (j.rooms && j.rooms.rooms) || [];
+      DATA.outside = (j.rooms && j.rooms.outside) || DATA.outside;
+      DATA.scenery = (j.rooms && j.rooms.scenery) || {};
+      roomIndex.clear();
+      DATA.rooms.forEach(function(r){
+        roomIndex.set(r.label, r);
+        (r.aliases || []).forEach(function(a){ roomIndex.set(a, r); });
+      });
+      floorId = (DATA.floors[0] && DATA.floors[0].id) || '1f';
+      buildWorld();
+      floorId = 'all';
+      focusFloor('all', false);
+    }
+
+    lastState = j.state || null;
+    syncHandBook(j.book, lastState);
+    buildShelf(j.books);
+    placeAvatar();
+    // 放在 placeAvatar 之后：它会把 targetPos 打到房间中心，座位点要把这个覆盖回来
+    if (motion) motion.setState(lastState);
+
+    // 她在别的楼层 → 自动跟过去（用户手动切过就不再抢）
+
+    hPlace.textContent = lastState && lastState.place ? lastState.place : '（没有空间状态）';
+    hDoing.textContent = ((lastState && (lastState.detail || lastState.doing)) || '—')
+      + (j.book && j.book.title ? ' · 手上《' + j.book.title + '》第 ' + ((j.book.chapter || 0) + 1) + '/' + (j.book.chapters || 1) + ' 章' : '');
+    hFloor.textContent = lastRoom ? labelOfFloor(lastRoom.floor) : (lastState && lastState.place ? '不在房间表里' : '—');
+    renderFloorButtons();
+    warn('');
+  } catch (e) {
+    warn('连不上桥接：' + (e && e.message ? e.message : e));
+  }
+}
+
+function labelOfFloor(id){
+  for (var i = 0; i < DATA.floors.length; i++) if (DATA.floors[i].id === id) return DATA.floors[i].label;
+  return id;
+}
+
+// ── 渲染循环 ────────────────────────────────────────────────────────
+var last = performance.now();
+function frame(now){
+  var dt = Math.min(0.05, (now - last) / 1000); last = now;
+
+  // 窗口被挡住/最小化时没必要继续烧显卡（--app 全屏窗口特别容易碰到）
+  if (document.hidden){ requestAnimationFrame(frame); return; }
+
+  // 阴影节流：最多 10 次/秒。太阳一秒才动一点点，她走路也慢，看不出来。
+  if (now - lastShadow > 100){ lastShadow = now; renderer.shadowMap.needsUpdate = true; }
+
+  // 「看她」模式下自动把镜头转回她的正脸（手拖过 4 秒内不抢，否则会跟人抢方向盘）
+  if (faceMode && !camTween && !drag && now - lastOrbitDrag > 4000){
+    var idealT = Math.PI / 2 + (avatar.rotation.y || 0);
+    var dT = ((idealT - orbit.theta + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    if (Math.abs(dT) > 0.30){ orbit.theta += dT * Math.min(1, dt * 2.2); applyOrbit(); }
+  }
+
+  // 上限 ~65fps：高刷屏上 144Hz 等于白烧一倍显卡，这个场景看不出区别
+  if (now - lastRenderAt < 15.0){ requestAnimationFrame(frame); return; }
+  lastRenderAt = now;
+
+  // 运镜插值：缓入缓出，角度/视野/注视点一起走，不然会像两个镜头硬接
+  if (faceMode){
+    // ── 贴脸：摄像机站在她面前，但仍然可以绕着她转 ──────────────────
+    // 关键：位置用 orbit.theta / orbit.phi 算（拖动改的就是这两个），
+    // 不然镜头会被"焊"在她脸上，鼠标怎么拖都不动。
+    var fr = herFrame();
+    var hw = new THREE.Vector3();
+    (idle.head || avatar).getWorldPosition(hw);
+
+    // 你没动过镜头时，它自己慢慢绕回她正脸；动过就听你的（4 秒内不抢）
+    if (!drag && now - lastOrbitDrag > 4000){
+      var ideal = Math.PI / 2 + (avatar.rotation.y || 0);
+      var dIdeal = ((ideal - orbit.theta + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      if (Math.abs(dIdeal) > 0.30) orbit.theta += dIdeal * Math.min(1, dt * 1.6);
+    }
+
+    faceDist += (faceZoom - faceDist) * (1 - Math.exp(-3.2 * dt));
+    var cp = Math.cos(orbit.phi), sp = Math.sin(orbit.phi);
+    var bob = Math.sin(now * 0.0016) * 0.010;              // 上下呼吸
+    var sway = Math.sin(now * 0.0011) * 0.014;             // 左右轻晃
+    camP.position.set(
+      hw.x + Math.cos(orbit.theta) * faceDist * cp + sway,
+      fr.y + sp * faceDist + bob,
+      hw.z + Math.sin(orbit.theta) * faceDist * cp
+    );
+    camP.lookAt(hw.x, fr.y - 0.035, hw.z);
+    camP.updateMatrixWorld();
+    activeCam = camP;
+    lookAt.set(hw.x, fr.y, hw.z);
+  } else if (camTween){
+    activeCam = camera;
+    camTween.t += dt;
+    var k = Math.min(1, camTween.t / camTween.dur);
+    var e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    var f = camTween.from, t = camTween.to;
+    orbit.theta = f.theta + (t.theta - f.theta) * e;
+    orbit.phi = f.phi + (t.phi - f.phi) * e;
+    orbit.radius = f.radius + (t.radius - f.radius) * e;
+    viewSpan = f.span + (t.span - f.span) * e;
+    lookAt.set(f.x + (t.x - f.x) * e, f.y + (t.y - f.y) * e, f.z + (t.z - f.z) * e);
+    resize();
+    applyOrbit();
+    if (k >= 1) camTween = null;
+  } else activeCam = camera;
+
+  if (avatar.visible){
+    avatar.position.lerp(targetPos, 1 - Math.exp(-5 * dt));
+
+  // 她在看书：书房里书摊在桌面（桌面顶 0.775），别处是捧在胸前
+  if (handBook && handBook.visible){
+    var byaw = avatar.rotation.y || 0;
+    var mode = readingMode(lastState);
+    if (mode === 'desk'){
+      handBook.position.set(
+        avatar.position.x + Math.sin(byaw) * 0.56,
+        0.80,
+        avatar.position.z + Math.cos(byaw) * 0.56
+      );
+      handBook.rotation.x = -0.06;
+    } else {
+      handBook.position.set(
+        avatar.position.x + Math.sin(byaw) * 0.20,
+        avatar.position.y + 1.06,
+        avatar.position.z + Math.cos(byaw) * 0.20
+      );
+      handBook.rotation.x = -0.55;   // 书立起来一点，对着低头看的角度
+    }
+    handBook.rotation.y = byaw;
+  }
+    if (!vrmReady){
+      // 占位小人的呼吸；VRM 加载后交给它自己的弹簧骨骼，不再整体缩放（会把模型拉变形）
+      var t = now * 0.0011;
+      var breath = 1 + Math.sin(t) * 0.009;
+      avatar.scale.set(1, breath, 1);
+      head.position.y = 0.99 + Math.sin(t) * 0.006;
+      hair.position.y = 1.00 + Math.sin(t) * 0.006;
+    }
+  }
+  // VRM 的头发/裙摆物理：每帧推进一次弹簧骨骼，不推进就是一块死的
+  if (vrm) {
+    // 用实际位移判断她在不在走：比"有没有目标点"准，被卡住时也不会原地踏步
+    var mdx = avatar.position.x - prevPos.x;
+    var mdz = avatar.position.z - prevPos.z;
+    var spd = Math.sqrt(mdx * mdx + mdz * mdz) / Math.max(dt, 0.0001);
+    prevPos.copy(avatar.position);
+    if (motion) motion.update(dt, now * 0.001, spd);
+    else if (spd > 0.25) updateWalk(dt, Math.min(spd, 3.5));
+    else updateIdle(now * 0.001);
+    // 眼珠跟着当前镜头：她看你，而不是看空气。镜头切换（正交/透视）时也跟着换。
+    if (vrm.lookAt) vrm.lookAt.target = activeCam;
+    // 眨眼：2.2~5.8 秒一次，一次 0.14 秒（快速闭上、稍慢睁开）。
+    // 静止不动的时候，眨眼和视线这两样最像活人，成本几乎为零。
+    if (vrm.expressionManager){
+      if (blinkPhase < 0){
+        blinkWait -= dt;
+        if (blinkWait <= 0) blinkPhase = 0;
+      } else {
+        blinkPhase += dt / 0.14;
+        if (blinkPhase >= 1){ blinkPhase = -1; blinkWait = 2.2 + Math.random() * 3.6; }
+      }
+      var bv = blinkPhase < 0 ? 0 : Math.sin(Math.PI * Math.min(1, blinkPhase));
+      vrm.expressionManager.setValue('blink', bv);
+    }
+    try { vrm.update(dt); } catch (e) {}
+  }
+  tick(now * 0.001, dt, now);
+
+  // 贴脸时必须压曝光。她的材质是 MToon，**不吃环境光**，直射光 100% 打在脸上；
+  // 而白天的 Hemi 0.8 + 太阳 1.3 加起来 2.1 倍，浅肤色直接被夹到纯白 ——
+  // 这就是"照她脸上都是白色"。贴脸时整体降 55%，背景也跟着暗，正好是肖像打光。
+  var fk = 1 - 0.55 * FOCUS_K;
+  sun.intensity = SUN_I * fk;
+  amb.intensity = AMB_I * fk;
+  rim.intensity = RIM_I * fk;
+
+  renderer.render(scene, activeCam);
+  requestAnimationFrame(frame);
+}
+
+// ── 交互 ────────────────────────────────────────────────────────────
+document.getElementById('bReload').addEventListener('click', function(){
+  DATA.rooms = []; roomIndex.clear(); placed = false; autoFollow = true; load(true);
+});
+document.getElementById('bFace').addEventListener('click', toggleView);
+document.getElementById('bDbg').addEventListener('click', dbgToggle);
+// F 键切换（页面上没有输入框，不会和打字冲突）
+document.addEventListener('keydown', function(e){
+  if (e.key === 'f' || e.key === 'F'){ e.preventDefault(); toggleView(); }
+});
+document.getElementById('bReset').addEventListener('click', function(){ faceMode = false; var fb = document.getElementById('bFace'); if (fb) fb.textContent = '🔍 看她'; autoFollow = false; goFloor('all'); });
+
+// 拖拽转视角（维护角度状态，不反算；上下限夹住而不是丢增量）
+var drag = null;
+function endDrag(){ drag = null; }
+renderer.domElement.addEventListener('pointerdown', function(e){
+  drag = { x: e.clientX, y: e.clientY };
+  try { renderer.domElement.setPointerCapture(e.pointerId); } catch (err) {}
+});
+['pointerup', 'pointercancel', 'pointerleave'].forEach(function(ev){
+  renderer.domElement.addEventListener(ev, endDrag);
+});
+window.addEventListener('blur', endDrag);   // 切窗口/丢焦点时别留着 drag，否则回来一动就跳
+renderer.domElement.addEventListener('pointermove', function(e){
+  if (!drag) return;
+  var dx = (e.clientX - drag.x) * 0.0055, dy = (e.clientY - drag.y) * 0.0055;
+  drag.x = e.clientX; drag.y = e.clientY;
+  lastOrbitDrag = performance.now();
+  orbit.theta -= dx;
+  orbit.phi = Math.max(PHI_MIN, Math.min(PHI_MAX, orbit.phi + dy));
+  applyOrbit();
+});
+// 滚轮：远景改正交视野宽度；贴脸时改她到镜头的距离（0.35~1.8 米）
+renderer.domElement.addEventListener('wheel', function(e){
+  e.preventDefault();
+  var factor = e.deltaY > 0 ? 1.08 : 1 / 1.08;
+  if (faceMode){
+    faceZoom = Math.max(0.35, Math.min(1.8, faceZoom * factor));
+  } else {
+    viewSpan = Math.max(3, Math.min(80, viewSpan * factor));
+    resize();
+  }
+  lastOrbitDrag = performance.now();
+}, { passive: false });
+
+// ── 每帧的小动静：树梢摇、蝴蝶飞、海浪涌、海鸥盘旋、灯在夜里亮起 ───────
+function tick(t, dt, now){
+  var i, o;
+  timeStep(dt); updateUpper(dt); updateFocus(dt, now); poolUpdate(dt, t);
+  herLight.intensity = FOCUS_K * (0.12 + 0.30 * TM.n);
+  for (i = 0; i < SWAY.length; i++){
+    o = SWAY[i];
+    if (o.breath) o.o.scale.y = 1 + Math.sin(t * 1.4) * 0.025;
+    else { o.o.rotation.z = Math.sin(t * 0.9 + o.ph) * 0.022; o.o.rotation.x = Math.cos(t * 0.7 + o.ph) * 0.016; }
+  }
+  for (i = 0; i < BFLY.length; i++){
+    o = BFLY[i]; var a = t * o.sp + o.ph;
+    o.o.position.set(o.cx + Math.cos(a) * o.r, 0.75 + Math.sin(t * 2 + o.ph) * 0.18, o.cz + Math.sin(a) * o.r * 0.7);
+    o.o.rotation.y = -a;
+    var fl = Math.sin(t * 16 + o.ph) * 0.9; o.w1.rotation.y = fl; o.w2.rotation.y = -fl;
+    o.o.visible = TM.n < 0.8;
+  }
+  for (i = 0; i < WAVES.length; i++){
+    o = WAVES[i];
+    if (o.bob) o.o.position.y = 0.1 + Math.sin(t * 1.3 + o.ph) * 0.014;
+    else o.o.position.x = 7 + o.side + Math.sin(t * 0.25 + o.ph) * 3.2;
+  }
+  if (SEA){
+    M.sea.map.offset.set(t * 0.004, t * 0.0025);
+    SEA.rt.offset.set(-t * 0.009, t * 0.006);
+    SEA.st.offset.set(t * 0.005, -t * 0.003);
+    SEA.ripple.opacity = (0.5 - 0.22 * TM.n) * (0.85 + Math.sin(t * 0.8) * 0.15);
+    for (i = 0; i < SHORE.length; i++){
+      o = SHORE[i];
+      var p = (t * 0.1 + o.ph) % 1;
+      o.o.position.z = -4.85 - (1 - p) * 5.5;
+      o.m.opacity = 0.6 * Math.sin(Math.PI * Math.pow(p, 0.7)) * (1 - 0.45 * TM.n);
+    }
+    for (i = 0; i < GULLS.length; i++){
+      o = GULLS[i]; var ga = t * o.sp + o.ph;
+      o.o.position.set(o.cx + Math.cos(ga) * o.r, o.y + Math.sin(t * 0.9 + o.ph) * 0.3, o.cz + Math.sin(ga) * o.r * 0.6);
+      o.o.rotation.y = -ga + Math.PI / 2;
+      o.w1.rotation.z = Math.sin(t * 5 + o.ph) * 0.45; o.w2.rotation.z = -Math.sin(t * 5 + o.ph) * 0.45;
+      o.o.visible = TM.n < 0.7;
+    }
+  }
+  if (M.water.map) M.water.map.offset.x = t * 0.012;
+}
+
+// ── 点房间聚焦、悬停高亮 ─────────────────────────────────────────────
+var ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), hover = null, down = null;
+function pickRoom(e){
+  var r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, activeCam);
+  var hits = ray.intersectObjects(PICKS, false);
+  for (var i = 0; i < hits.length; i++){
+    var rm = hits[i].object.userData.room;
+    if (rm && rm.floor === '2f' && UKc < 0.5) continue;
+    return hits[i].object;
+  }
+  return null;
+}
+function setHover(f){
+  if (f === hover) return;
+  if (hover && hover.material) hover.material.emissiveIntensity = 0;
+  hover = f;
+  if (hover && hover.material) hover.material.emissiveIntensity = 0.28;
+  renderer.domElement.style.cursor = hover ? 'pointer' : '';
+}
+function focusRoom(r){
+  faceMode = false;
+  var fb = document.getElementById('bFace'); if (fb) fb.textContent = '🔍 看她';
+  setWallsFaded(false);
+  floorId = r.floor; autoFollow = false; renderFloorButtons();
+  var p = wpos(r), span = Math.max(r.w, r.d);
+  startTween({ theta: Math.PI * 0.25, phi: 0.85, radius: span * 1.5, span: span * 1.6 + 1.6, x: p.x, y: p.y + 0.4, z: p.z }, 1.1);
+}
+renderer.domElement.addEventListener('pointermove', function (e){ if (!drag) setHover(pickRoom(e)); });
+renderer.domElement.addEventListener('pointerleave', function (){ setHover(null); });
+renderer.domElement.addEventListener('pointerdown', function (e){ down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+renderer.domElement.addEventListener('pointerup', function (e){
+  if (!down) return;
+  var moved = Math.hypot(e.clientX - down.x, e.clientY - down.y), dtm = performance.now() - down.t;
+  down = null;
+  if (moved > 5 || dtm > 450) return;
+  var f = pickRoom(e);
+  if (f && f.userData.room) focusRoom(f.userData.room);
+});
+
+function cycleTime(){
+  var i = TIME_MODES.indexOf(TM.mode);
+  TM.mode = TIME_MODES[(i + 1) % TIME_MODES.length];
+  document.getElementById('bMood').textContent = TIME_LABEL[TM.mode];
+}
+document.getElementById('bMood').textContent = TIME_LABEL[TM.mode] || '🕒 实时';
+document.getElementById('bMood').addEventListener('click', cycleTime);
+document.addEventListener('keydown', function (e){
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 't' || e.key === 'T') cycleTime();
+  var VIEWS = ['all'].concat(DATA.floors.map(function (f){ return f.id; }));
+  var idx = '1234'.indexOf(e.key);
+  if (idx >= 0 && VIEWS[idx]){ autoFollow = false; goFloor(VIEWS[idx]); }
+});
+
+
+resize();
+setTimeout(function (){ app.classList.add('in'); }, 60);
+load(true);
+loadModel();
+setInterval(function(){ load(false); }, 3000);
+requestAnimationFrame(frame);
+</script>
+</body></html>
