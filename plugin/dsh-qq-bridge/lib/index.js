@@ -989,17 +989,59 @@ function createHandlers() {
   }
 
   const stickersHandler = async (req, res) => {
-    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: '只支持 GET' })
-    const raw = readJson(join(STATE_DIR(), 'stickers.json'), [])
-    const all = Array.isArray(raw) ? raw : []
-    const items = all.slice(0, 60).map((entry) => ({
+    // 写：走桥接的 /api/stickers/note —— 表情库归桥接管，它握着内存里那份和锁。
+    if (req.method === 'POST') {
+      const body = await readBody(req)
+      if (body === null) return sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' })
+      const stickerId = String(body.stickerId ?? '').trim()
+      if (stickerId === '') return sendJson(res, 400, { ok: false, error: 'stickerId 不能为空' })
+      const result = await bridgeFetch('/api/stickers/note', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          stickerId,
+          note: String(body.note ?? '').slice(0, 200),
+          tags: Array.isArray(body.tags) ? body.tags.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 20) : []
+        })
+      })
+      if (!result.ok) {
+        return sendJson(res, 502, {
+          ok: false,
+          error: (result.data && result.data.error) || ('桥接没接住（' + result.status + '）——它在跑吗？')
+        })
+      }
+      return sendJson(res, 200, { ok: true, sticker: (result.data && result.data.sticker) || null })
+    }
+    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: '只支持 GET / POST' })
+
+    // 读：优先问桥接（它那份最新）；桥接没起来就退回文件，至少让她自己的备注看得见。
+    const live = await bridgeFetch('/api/stickers?count=500', {}, 6000)
+    const mapEntry = (entry) => ({
       id: String(entry.id ?? entry.md5 ?? ''),
-      desc: String(entry.desc ?? entry.localNote ?? entry.remark ?? ''),
+      desc: String(entry.desc ?? entry.remark ?? ''),
+      note: String(entry.localNote ?? entry.note ?? ''),
+      tags: Array.isArray(entry.tags) ? entry.tags.map(String) : [],
       url: String(entry.url ?? ''),
       resId: String(entry.resId ?? ''),
       useCount: Number(entry.useCount ?? 0)
-    }))
-    return sendJson(res, 200, { ok: true, total: all.length, items })
+    })
+    if (live.ok && live.data && Array.isArray(live.data.stickers)) {
+      const items = live.data.stickers.map(mapEntry)
+      return sendJson(res, 200, {
+        ok: true,
+        live: true,
+        total: Number(live.data.total) || items.length,
+        items
+      })
+    }
+    const raw = readJson(join(STATE_DIR(), 'stickers.json'), [])
+    const all = Array.isArray(raw) ? raw : []
+    return sendJson(res, 200, {
+      ok: true,
+      live: false,
+      total: all.length,
+      items: all.slice(0, 60).map(mapEntry)
+    })
   }
 
   const roleEditHandler = async (req, res) => {
