@@ -25,7 +25,7 @@ export const name = 'qq-bridge'
 const ROUTE_BASE = '/dsh-qq-bridge'
 
 /** 插件版本。status 和 /api 都报这一个，别再各写各的。 */
-const PLUGIN_VERSION = '0.4.5'
+const PLUGIN_VERSION = '0.5.0'
 
 /** 这个插件自己的目录（被「检查更新」覆盖的就是它）。 */
 const SELF_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -496,8 +496,8 @@ const ENUMS = {
     group: '语音',
     label: '引擎',
     options: [
-      { value: 'gptsovits', label: 'GPT-SoVITS（本地）' },
-      { value: 'edge', label: 'Edge TTS（在线）' }
+      { value: 'indextts', label: 'IndexTTS 2.5（本地，当前）' },
+      { value: 'edge', label: 'Edge TTS（在线，兜底）' }
     ]
   },
   'socialV2.voice.edgeVoice': {
@@ -1293,10 +1293,42 @@ function createHandlers() {
    * 这里只回答「装了什么、什么版本」。判断某个插件死活是它自己的事（比如星图开机自己会报）。
    * 只列有浏览器那一半的（`dsh.client`），因为只有它们才可能跟这一页有交集。
    */
+  /**
+   * 哪些插件真的被启用了：把每个 profile 的 `dsh.profile.bundles` 汇总一遍。
+   *
+   * 为什么需要它：插件目录里躺着的可能是**已经停用**的（比如被星图开机替掉的 550C）。
+   * 只按目录列会把停用的也算成「同机插件」，看着像它还活着。
+   * 读不到 profile 就返回 null —— 那时宁可按老行为全列，也不要一张空卡。
+   */
+  function enabledPluginNames() {
+    const names = new Set()
+    let found = false
+    try {
+      const dshDir = dirname(dirname(SELF_DIR))   // ~/.dsh
+      const profiles = readdirSync(join(dshDir, 'profiles'), { withFileTypes: true })
+      for (const entry of profiles) {
+        if (!entry.isDirectory()) continue
+        const manifest = readJson(join(dshDir, 'profiles', entry.name, 'package.json'), null)
+        if (!manifest || typeof manifest !== 'object') continue
+        found = true
+        const bundles = manifest.dsh?.profile?.bundles
+        if (Array.isArray(bundles)) for (const b of bundles) names.add(String(b))
+        if (manifest.dependencies && typeof manifest.dependencies === 'object') {
+          for (const dep of Object.keys(manifest.dependencies)) names.add(dep)
+        }
+      }
+    } catch {
+      return null
+    }
+    return found ? names : null
+  }
+
   const peerHandler = async (req, res) => {
     if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: '只支持 GET' })
     const pluginsDir = dirname(SELF_DIR)
     const peers = []
+    // 停用的插件不该出现在「同机插件」里（比如被星图开机替掉的 550C）
+    const enabled = enabledPluginNames()
     let entries = []
     try {
       entries = readdirSync(pluginsDir, { withFileTypes: true })
@@ -1313,6 +1345,9 @@ function createHandlers() {
       const client = manifest.dsh && typeof manifest.dsh === 'object' ? manifest.dsh.client : null
       if (client === null || client === undefined) continue
       const name = typeof manifest.name === 'string' && manifest.name !== '' ? manifest.name : entry.name
+
+      // 只列「确实启用了」的：目录里躺着的停用插件不该出现在这一页
+      if (enabled && !enabled.has(name) && !enabled.has(entry.name)) continue
 
       // 显示名三级：dshLabel（本插件早期约定的）→ locale/zh.json 的 meta.title（DSH 自己也读这里）→ 包名。
       // 优先读 locale 是因为那是官方口径：插件只要写了 locale，DSH 的插件列表和这张卡就同名。
