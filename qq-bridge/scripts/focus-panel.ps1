@@ -1,4 +1,4 @@
-﻿param([switch]$Star, [switch]$Unfullscreen, [switch]$Close, [switch]$Topmost)
+﻿param([switch]$Star, [switch]$Space, [switch]$Unfullscreen, [switch]$Close, [switch]$Topmost)
 # 面板窗口 / 星图窗口的处置
 #   默认          = 全屏 + 置前 + 置顶：全屏就置前(0)；不是全屏就关掉重开(2)；没有窗口(1)
 #   -Unfullscreen = 退出全屏（发 F11），之后仍保持置顶(4)
@@ -56,7 +56,7 @@ public class W {
 "@
 Add-Type -TypeDefinition $src -Language CSharp
 
-if ($Star) { $needle = '记忆星图' } else { $needle = '小鲸鱼的控制终端' }
+if ($Star) { $needle = '记忆星图' } elseif ($Space) { $needle = '她的家' } else { $needle = '小鲸鱼的控制终端' }
 $handles = [W]::Find($needle)
 if ($handles.Count -eq 0) { exit 1 }
 
