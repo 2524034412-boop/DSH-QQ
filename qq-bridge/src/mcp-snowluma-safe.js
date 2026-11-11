@@ -333,6 +333,10 @@ const TOOL_CONFIG_FLAGS = {
   qq_group_files: 'groupFiles',
   qq_group_file_read: 'groupFiles',
   qq_mood: 'mood',
+  qq_space_go: 'space',
+  qq_space_status: 'space',
+  qq_reading: 'reading',
+  qq_reading_note: 'reading',
   qq_meme: 'meme',
   qq_meme_learn: 'memeLearn',
   qq_judge_offense: 'judgeOffense',
@@ -594,6 +598,24 @@ server.tool(
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取最近消息失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_environment',
+  '贴着那道缝再看一眼：他那边的空气现在多少度、潮不潮（只读）。说的时候当他的天气说，别报读数、别解释魔法。雾起来（stale=true）就是看不见，别编。',
+  {
+    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    hours: z.number().optional().describe('看最近多少小时的趋势，默认 24，最大 168')
+  },
+  async ({ key, token, hours }) => {
+    try {
+      const data = await agentApi(`/api/socialV2/environment?key=${encodeURIComponent(key)}&hours=${hours ?? 24}`, { headers: { 'x-agent-token': token } });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `读取环境数据失败：${error?.message ?? error}` }], isError: true };
     }
   }
 );
@@ -1259,6 +1281,132 @@ if (cfg.socialV2?.tools?.groupFiles !== false) {
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `读取群文件失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.space !== false) {
+  server.tool(
+    'qq_space_go',
+    '从当前房间走到另一间。这是你的身体真的在动，不是比喻——调用了就换地方：别人之后再问你「在哪」，答案会变；家里的画面里你也真的会出现在那里。只在确实要换地方时用（去睡、去泡水、去书房拿东西、出门透气）。不要每句话都挪一次，也不要为了配合聊天编造行踪；没换地方就别调。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      place: z.string().describe('要去的地方：书房 / 客厅 / 厨房 / 厕所 / 门厅 / 楼梯 / 卧室 / 客房 / 储物间 / 走廊 / 花园 / 泳池 / 外面（也可以用「浴室」「沙发」「水里」这类别称）'),
+      detail: z.string().optional().describe('到了之后手边有什么、环境什么样（一句感官细节）。只写物和环境，不要写你自己的动作，例如「水刚放满，还冒着热气」'),
+      doing: z.string().optional().describe('一句话说明你在做什么，如「泡澡」。一般不用给：detail 更自然，动作让对话自己长出来')
+    },
+    async ({ key, token, place, detail, doing }) => {
+      try {
+        const data = await agentApi('/api/space/move', {
+          method: 'POST',
+          body: JSON.stringify({ key, place, detail, doing }),
+          headers: { 'x-agent-token': token }
+        });
+        const st = data?.state || {};
+        return {
+          content: [{
+            type: 'text',
+            text: `已在${st.place || place}${st.detail ? `（${st.detail}）` : ''}。下次有人问你时，你就在这里。`
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `换地方失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'qq_space_status',
+    '看自己此刻在哪、手边有什么。唤醒提示里通常已经带了【所在】，只有不确定、或刚换过地方想确认时才查。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）')
+    },
+    async ({ key, token }) => {
+      try {
+        const data = await agentApi(`/api/space/state?key=${encodeURIComponent(key)}`, {
+          headers: { 'x-agent-token': token }
+        });
+        const st = data?.state || null;
+        if (!st || !st.place) return { content: [{ type: 'text', text: '你现在没有空间状态（不在任何地方记录里）。' }] };
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ place: st.place, detail: st.detail || '', doing: st.doing || '', since: st.since || null })
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `读取位置失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.reading !== false) {
+  server.tool(
+    'qq_reading',
+    '读一段书。默认 mode=read：接着上次读到的地方，把下一段正文取回来给你看（约 2600 字，读完自动往后走，读完一节会翻到下一节）。mode=status：只看读到哪、书架有什么、你自己写过什么批注，不取正文。想聊书、想引用原文、想知道上次读到哪时用。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      mode: z.enum(['read', 'status']).optional().describe('read=读下一段正文（默认）；status=只看进度和批注'),
+      chars: z.number().optional().describe('mode=read 时一次读多少字，400~6000，默认 2600')
+    },
+    async ({ key, token, mode, chars }) => {
+      try {
+        if (mode === 'status') {
+          const data = await agentApi('/api/reading/state', { headers: { 'x-agent-token': token } });
+          const book = data?.book || null;
+          const books = Array.isArray(data?.books) ? data.books : [];
+          const notes = Array.isArray(data?.notes) ? data.notes : [];
+          if (!book) {
+            return { content: [{ type: 'text', text: books.length ? `书架上 ${books.length} 本，还没确定在读哪本。` : '书架是空的。' }] };
+          }
+          const lines = [
+            `在读：《${book.title}》第 ${(book.chapter || 0) + 1}/${book.chapters || '?'} 章（${book.progress || 0}%）`,
+            notes.length ? '书边的批注：' + notes.map((n) => `「${n.note || n.quote}」`).join('') : '还没写过批注。'
+          ];
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+        const q = `?chars=${encodeURIComponent(String(chars || 2600))}`;
+        const data = await agentApi('/api/reading/read' + q, { headers: { 'x-agent-token': token } });
+        const head = `《${data.title}》第 ${(data.chapter || 0) + 1}/${data.chapters} 章 · ${data.chapterTitle || ''} · 本节 ${data.percent || 0}%`;
+        const tail = data.atEndOfChapter ? '\n\n（这一节读完了，下次会从下一节开头继续。）' : '';
+        return { content: [{ type: 'text', text: `${head}\n\n${data.text || ''}${tail}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `读书失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'qq_reading_note',
+    '在正在读的那本书上写一句批注，像在书边写字。写下来的东西之后能被你自己想起来（会出现在唤醒提示的【在读】里），所以写短、写具体，别写成书评。不是每次读都要写，只写真有感觉的那几句。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      text: z.string().describe('批注内容，一句话，比如「这段写得真狠」「他在骗自己」'),
+      quote: z.string().optional().describe('想摘的原句（可选）'),
+      share: z.boolean().optional().describe('要不要顺手发给他看一眼（默认不发，只留在书里）')
+    },
+    async ({ key, token, text, quote, share }) => {
+      try {
+        const data = await agentApi('/api/reading/note', {
+          method: 'POST',
+          body: JSON.stringify({ key, text, quote, share: share === true }),
+          headers: { 'x-agent-token': token }
+        });
+        const n = data?.note || {};
+        return {
+          content: [{
+            type: 'text',
+            text: `写下来了：《${n.bookTitle || ''}》第 ${(n.chapter || 0) + 1} 章 ·「${n.note || n.quote || text}」${share ? '（已转给他）' : '（只留在书里）'}`
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `写批注失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
