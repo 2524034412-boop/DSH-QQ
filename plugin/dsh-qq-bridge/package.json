@@ -1,6 +1,6 @@
 {
   "name": "dsh-qq-bridge",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "private": true,
   "description": "把 qq-bridge 的控制台搬进 DSH 设置：状态、白名单、角色、重启与测试发送，并留一张可扩展的卡片槽。",
   "type": "module",
