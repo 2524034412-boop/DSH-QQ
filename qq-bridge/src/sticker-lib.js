@@ -261,7 +261,8 @@ function focusTokens(text) {
  * 纯函数：只看备注/标签/上次用法和对话文本的重合度，不做任何额外推断。
  */
 export function pickStickerCandidates(entries, focus = '', limit = 3) {
-  const list = (Array.isArray(entries) ? entries : []).map(normalizeStickerEntry).filter(Boolean);
+  const list = (Array.isArray(entries) ? entries : []).map(normalizeStickerEntry).filter(Boolean)
+    .filter((e) => !isStickerBanned(e));
   const tokens = focusTokens(focus);
   if (!list.length || !tokens.length) return [];
   const scored = list.map((e) => {
@@ -273,6 +274,19 @@ export function pickStickerCandidates(entries, focus = '', limit = 3) {
     return { e, score };
   }).filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
   return scored.slice(0, Math.max(1, limit)).map((x) => ({ ...x.e, ref: shortStickerRef(x.e), score: +x.score.toFixed(1) }));
+}
+
+/**
+ * 主人封掉的表情：备注里写了「别发 / 不要发 / 禁用」，或者标签里有「禁用」。
+ * 她可以看得到（知道有这么一张），但不许发 —— 判断放在这里，不靠她自己自觉。
+ */
+export function isStickerBanned(entry) {
+  const e = normalizeStickerEntry(entry);
+  if (!e) return false;
+  const note = String(e.localNote || '');
+  const tags = (e.tags || []).map(String);
+  if (/(别发|不要发|禁用)/.test(note)) return true;
+  return tags.some((t) => /(禁用|别发)/.test(t));
 }
 
 // 生成注入 AI 的“可用表情包”摘要（不暴露完整 URL，避免上下文爆炸）。
@@ -290,7 +304,8 @@ export function buildStickerContext(entries, max = 8, opts = {}) {
     const label = e.desc || e.localNote || '（无备注）';
     const extra = e.tags?.length ? ` [${e.tags.join('/')}]` : '';
     const used = e.useCount ? ` 用过${e.useCount}次` : '';
-    return `- ${label}${extra}${used} · ref=${shortStickerRef(e)}`;
+    const ban = isStickerBanned(e) ? '⛔禁用·不许发 ' : '';
+    return `- ${ban}${label}${extra}${used} · ref=${shortStickerRef(e)}`;
   };
 
   // 此刻候选：和最近对话内容对得上的，优先摆在前面
@@ -336,6 +351,8 @@ export function buildStickerStrategyHint() {
     '  · 记完这张就算会了，随时能发；一次醒来补 1~2 个就够，别一口气刷十几个。',
     '- 实在看不懂（糊、纯符号、看不出情绪）：换一张看得懂的，别拿没看过的去赌。',
     '- 连着几次都看不懂：私聊问主人一句「这几个表情我没看懂，ref=xxx 是啥意思」，一次问 1~3 个，别连发。',
+    '- 备注里写了「别发」、或标签里带「禁用」的：**永远不要发**。那是主人封掉的，不是给你挑的。',
+    '- 标了「百搭 / 随时可用」的：随时能发，甚至每句都能配；但别连着发同一张，也别每句都靠它——用多了就腻。',
     '- 发送：qq_send_sticker，ref 填 8 位编码；一条只能一张、不能带字。想说的话另发一条，再单独发表情；引用 / 点名传 replyToMessageId / atUserId。'
   ].join('\n');
 }
