@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
 
     const BASE = '/dsh-qq-bridge'
     const STATUS_MS = 10000
-    const PLUGIN_VERSION = '0.4.5'
+    const PLUGIN_VERSION = '0.5.0'
     // SnowLuma 是第三方项目，不随包分发：给一份我们写的安装说明。
     const SNOWLUMA_GUIDE = 'https://github.com/2524034412-boop/DSH-QQ/blob/main/docs/SNOWLUMA.md'
 
@@ -1564,6 +1564,7 @@ window.__ModuleLoader__.load({
       { id: 'link', label: '连接', en: 'ACCESS' },
       { id: 'soul', label: '灵魂', en: 'PERSONA' },
       { id: 'mind', label: '记忆', en: 'MEMORY' },
+      { id: 'read', label: '读书', en: 'READING' },
       { id: 'sys', label: '系统', en: 'SYSTEM' }
     ]
 
@@ -1645,6 +1646,59 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'qbg-sec' + (on ? ' is-on' : ''), role: 'tabpanel', 'aria-hidden': !on }, ...children)
     }
 
+    /**
+     * 读书：数据由 dsh-reading 插件写在同一批 JSON 里，这里只读、只显示。
+     * 找不到那个插件时给一句人话，而不是空白。
+     */
+    function ReadingCard() {
+      const [ov] = useJson('/dsh-reading/overview')
+      const [list, setList] = React.useState(null)
+      React.useEffect(() => {
+        fetch('/dsh-reading/books', { credentials: 'same-origin' })
+          .then((r) => r.json())
+          .then((d) => setList(d && d.ok ? d.books : []))
+          .catch(() => setList([]))
+      }, [])
+      const chip = (label, value) =>
+        h('span', { key: label, className: 'qbg-chip' }, label, h('small', { style: { opacity: 0.6, marginLeft: '4px' } }, value))
+      const chars = (n) => {
+        const v = Number(n) || 0
+        return v >= 10000 ? (v / 10000).toFixed(1) + ' 万' : String(v)
+      }
+      if (ov.data === null && ov.error) {
+        return h('div', { className: 'qbg-card' },
+          h('p', { className: 'qbg-title' }, '读书'),
+          h('p', { className: 'qbg-note' }, '没找到「读书」插件：装好 dsh-reading 之后，这里会自动出现书架和阅读记录。'))
+      }
+      const d = ov.data || {}
+      const books = (list || []).filter((b) => b.updatedAt > 0 || b.notes > 0)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      const notes = Array.isArray(d.recentNotes) ? d.recentNotes : []
+      return h('div', { className: 'qbg-card' },
+        h('p', { className: 'qbg-title' }, '读书', h('small', { style: { opacity: 0.5, marginLeft: '6px' } }, 'READING')),
+        h('div', { className: 'qbg-row' },
+          chip('今天', chars(d.todayChars) + ' 字'),
+          chip('连续', (d.streak || 0) + ' 天'),
+          chip('在读', (d.reading || 0) + ' 本'),
+          chip('笔记', (d.notes || 0) + ' 条')),
+        books.length
+          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' } },
+              books.slice(0, 4).map((b, i) => h('div', { key: b.id, style: { display: 'flex', gap: '8px', alignItems: 'baseline' } },
+                h('span', { style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                  (i === 0 ? '📖 手上 · ' : '') + b.title),
+                h('span', { style: { opacity: 0.6, fontSize: '12px', flex: '0 0 auto' } },
+                  '第 ' + (b.chapter + 1) + '/' + b.chapters + ' 章 · ' + b.progress + '%'))))
+          : h('p', { className: 'qbg-note' }, '还没开始读。到「设置 → 读书」挑一本，或者把书丢进 ~/.dsh/reading/books/。'),
+        notes.length
+          ? h('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '4px' } },
+              h('p', { style: { margin: 0, opacity: 0.55, fontSize: '12px' } }, '最近的笔记'),
+              notes.slice(0, 3).map((n) => h('div', { key: n.id, style: { fontSize: '12px', opacity: 0.85 } },
+                '「' + String(n.quote || n.note || '').slice(0, 40) + '」',
+                h('span', { style: { opacity: 0.55, marginLeft: '6px' } }, n.bookTitle || ''))))
+          : null
+      )
+    }
+
     function QQBridgePage(props) {
       ensureStyle()
       const [tab, setTabState] = React.useState(readTab)
@@ -1683,6 +1737,7 @@ window.__ModuleLoader__.load({
         section(tab === 'link', h(AccessCard), h(ModeAndFlagsCard)),
         section(tab === 'soul', h(RoleCard), h(SlangCard), h(StickerCard), h(PromptCard)),
         section(tab === 'mind', h(MemoryCard, { active: tab === 'mind' }), h(SocialCard), h(DigestCard)),
+        section(tab === 'read', h(ReadingCard)),
         section(tab === 'sys', h(UpdateCard, { active: tab === 'sys' }), h(BackupsCard), h(LogsCard), ext))
     }
 
