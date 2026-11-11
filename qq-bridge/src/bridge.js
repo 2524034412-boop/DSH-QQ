@@ -472,7 +472,7 @@ function readActivityTail(n) {
 function listRoles() {
   try {
     return fs.readdirSync(path.join(ROOT, 'roles'))
-      .filter((f) => f.endsWith('.md') && f !== 'README.md')
+      .filter((f) => f.endsWith('.md') && f !== 'README.md' && f !== 'world.md')
       .map((f) => f.slice(0, -3))
       .sort((a, b) => a.localeCompare(b, 'zh-CN'));
   } catch {
