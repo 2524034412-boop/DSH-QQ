@@ -886,33 +886,102 @@ window.__ModuleLoader__.load({
 
     function StickerCard() {
       const [state, reload] = useJson(BASE + '/stickers')
+      const [picked, setPicked] = React.useState(null)
+      const [note, setNote] = React.useState('')
+      const [tags, setTags] = React.useState('')
+      const [msg, setMsg] = React.useState('')
+      const [busy, setBusy] = React.useState(false)
+
       if (state.data === null) {
         return state.error === '' ? null : h('div', { className: 'qbg-card' }, h('p', { className: 'qbg-title' }, '收藏的表情'), h('p', { className: 'qbg-err' }, state.error))
       }
       const items = state.data.items || []
       const withImage = items.filter((item) => typeof item.url === 'string' && item.url !== '')
+      const noted = items.filter((item) => String(item.note || '').trim() !== '').length
+
+      const pick = (item) => {
+        setPicked(item)
+        setNote(item.note || '')
+        setTags((item.tags || []).join(','))
+        setMsg('')
+      }
+
+      const save = () => {
+        if (picked === null) return
+        setBusy(true)
+        setMsg('')
+        post(BASE + '/stickers', {
+          stickerId: picked.id,
+          note: note.trim(),
+          tags: tags.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+        })
+          .then((result) => {
+            if (result.ok && result.data && result.data.ok !== false) {
+              setMsg('已保存，她下次醒来就按这个认')
+              setPicked(Object.assign({}, picked, { note: note.trim() }))
+              reload()
+            } else {
+              setMsg('失败：' + ((result.data && result.data.error) || result.status))
+            }
+          })
+          .catch((error) => setMsg('失败：' + String(error && error.message ? error.message : error)))
+          .finally(() => setBusy(false))
+      }
+
       return h(
         'div',
         { className: 'qbg-card' },
         h('div', { className: 'qbg-row', style: { justifyContent: 'space-between', marginBottom: '8px' } },
-          h('p', { className: 'qbg-title', style: { margin: 0 } }, '收藏的表情（' + state.data.total + '）'),
+          h('p', { className: 'qbg-title', style: { margin: 0 } }, '收藏的表情（' + state.data.total + ' · 已备注 ' + noted + '）'),
           h('button', { className: 'qbg-btn', onClick: reload }, '刷新')
         ),
         withImage.length > 0
           ? h('div', { className: 'qbg-stickers' }, withImage.map((item) =>
-              h('figure', { className: 'qbg-sticker', key: item.id, title: item.desc || item.id },
+              h('figure', {
+                className: 'qbg-sticker',
+                key: item.id,
+                title: (item.note || item.desc || item.id) + '\n（点一下写备注）',
+                onClick: () => pick(item),
+                style: picked !== null && picked.id === item.id ? { outline: '2px solid var(--q-accent, #6ea8fe)' } : null
+              },
                 h('img', {
                   src: item.url,
-                  alt: item.desc || '表情',
+                  alt: item.note || item.desc || '表情',
                   loading: 'lazy',
                   referrerPolicy: 'no-referrer',
                   onError: (event) => { event.currentTarget.style.display = 'none' }
                 }),
-                h('figcaption', null, item.desc === '' ? '（没备注）' : item.desc)
+                h('figcaption', null, (item.note || '').trim() === '' ? (item.desc === '' ? '（没备注）' : item.desc) : item.note)
               )
             ))
           : h('p', { className: 'qbg-note' }, items.length === 0 ? '还没有收藏的表情。' : '这些表情没有图片地址，只能看备注。'),
-        h('p', { className: 'qbg-note' }, '这里只读；给她表情写备注、记用法，用她自己的 qq_sticker_note。（旧面板已停用）')
+        picked !== null
+          ? h('div', { style: { marginTop: '10px', borderTop: '1px solid var(--q-line)', paddingTop: '10px' } },
+              h('p', { className: 'qbg-note', style: { margin: '0 0 6px' } },
+                '正在改：' + (picked.id || '') + (picked.desc ? '（官方备注：' + picked.desc + '）' : '')),
+              h('textarea', {
+                value: note,
+                onChange: (event) => setNote(event.target.value),
+                maxLength: 200,
+                rows: 3,
+                placeholder: '画面 + 图上的字 + 什么时候用。例：猫举拳砸陨石，配字「毁灭吧」；自暴自弃、发疯时用',
+                style: { width: '100%', boxSizing: 'border-box', resize: 'vertical', font: 'inherit', padding: '6px', borderRadius: '8px' }
+              }),
+              h('input', {
+                value: tags,
+                onChange: (event) => setTags(event.target.value),
+                placeholder: '标签，逗号分隔（发疯,无语,撒娇）',
+                style: { width: '100%', boxSizing: 'border-box', marginTop: '6px', font: 'inherit', padding: '6px', borderRadius: '8px' }
+              }),
+              h('div', { className: 'qbg-row', style: { marginTop: '8px' } },
+                h('button', { className: 'qbg-btn qbg-primary', disabled: busy, onClick: save }, busy ? '保存中…' : '保存'),
+                h('button', { className: 'qbg-btn', onClick: () => { setPicked(null); setMsg('') } }, '关闭')
+              ),
+              msg !== '' ? h('p', { className: msg.startsWith('失败') ? 'qbg-err' : 'qbg-note' }, msg) : null
+            )
+          : null,
+        h('p', { className: 'qbg-note' },
+          '点一张图，下面就能写她该在什么时候用它。没备注的她看不懂、就不敢发——写一句，她下次醒来就能用。文字存在本地，不上传。')
       )
     }
 
