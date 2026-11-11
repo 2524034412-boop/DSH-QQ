@@ -247,8 +247,14 @@ ${socialGraphStyle}
   body.social-mode .detail,
   body.social-mode #tip{display:none!important}
   body.social-mode nav .toolgroup:not(.viewswitch){display:none}
+/* 空星图：还没有记忆时给一句人话，别让人对着一片黑发呆 */
+.mem-empty{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:12;max-width:min(460px,calc(100vw - 48px));text-align:center;pointer-events:none;color:var(--ink);opacity:.94}
+.mem-empty h2{font-size:20px;font-weight:600;letter-spacing:.08em;margin:0 0 12px}
+.mem-empty p{margin:0 0 8px;color:var(--dim);font-size:13px;line-height:1.9}
+.mem-empty kbd{font:inherit;padding:1px 6px;border:1px solid var(--line);border-radius:6px;color:var(--ink)}
 </style></head><body class="fade">
 <canvas id="sky" tabindex="0" role="region" aria-label="记忆星图：方向键旋转，加减键缩放，左右方括号浏览记忆，Enter 钉住，Escape 取消" aria-describedby="skyhelp"></canvas>
+${total === 0 ? '<div class="mem-empty"><h2>还没有记忆</h2><p>她跟人聊过之后，这里会一颗一颗亮起来。</p><p>先去 QQ 跟她说句话；或者让她用 <kbd>qq_remember</kbd> 记点什么。</p></div>' : ''}
 
 <div class="hud tl">
   <i class="c c1" aria-hidden="true"></i><i class="c c2" aria-hidden="true"></i>
