@@ -19,6 +19,9 @@ import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
 import * as presetPrompt from '../src/preset-prompt.js';
+import * as coreMemoryHint from '../src/core-memory-hint.js';
+import * as spaceState from '../src/space-state.mjs';
+import * as environment from '../src/environment.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
@@ -160,7 +163,14 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker,
-    ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt,
+    ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...coreMemoryHint,
+    // 空间（space）是后来加的：读状态要读真实文件，测试里 STATE_DIR 是临时目录，
+    // 用真实现即可（读不到就是空）；走动调度和页面渲染在测试里不该真跑。
+    ...spaceState,
+    // 温湿度纯函数（读状态的文件路径由 bridge.js 自己拼，这里只提供函数）
+    ...environment,
+    startSpaceAutonomy: () => ({ stop() {} }),
+    renderSpacePage: () => '',
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事（同理见下面的
     // cleanupTemp / processAudioVolume 桩）。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),
