@@ -342,7 +342,37 @@ await test('oversized first stored unread remains intact and cannot be skipped b
   assert.ok(JSON.stringify(snapshot).length <= 500);
   assert.deepEqual(plain(st.unread[0]), storedBefore);
   const unread = await request('unread');
-  assert.deepEqual(unread.data.messages[0], storedBefore);
+  // 响应会多带一个派生的 age（多久以前），正文本身必须原样返回。
+  const { age, ...served } = unread.data.messages[0];
+  assert.equal(typeof age, 'string');
+  assert.deepEqual(served, storedBefore);
+});
+
+// 群 1125288089：别人已经在聊新话题，她却回头接十几分钟前那句「病娇文」。
+// 根因是未读按「最旧优先」入快照、预算一满就砍掉最新的，而消息体里只有 epoch
+// 毫秒，模型判断不出新旧。快照必须自带 age、latest（最新几句）和 stale（最早
+// 那条已翻篇），她才知道现在在聊什么。
+await test('snapshot marks message ages and points at the current thread, not the stale one', async ({ h, st, request, append }) => {
+  const staleMs = 15 * 60 * 1000;
+  append('塞两本病娇文'); // seq 1，稍后改成 15 分钟前
+  st.unread[0].time = Date.now() - staleMs;
+  append('他能自己拆出来的'); // seq 2，刚刚
+  append('都是整合在一起的'); // seq 3，刚刚
+  const snapshot = h.buildWakeSnapshotV2(KEY);
+  assert.deepEqual(seqs(snapshot.messages), [1, 2, 3], '旧消息不能被丢掉，否则水位会偷偷推进');
+  assert.equal(snapshot.messages[0].age, '15 分钟前');
+  assert.equal(snapshot.messages[0].expired, true, '翻篇的旧话要逐条标出来');
+  assert.equal(snapshot.messages[2].age, '刚刚');
+  assert.equal(snapshot.messages[2].expired, undefined);
+  assert.equal(snapshot.stale.sender !== undefined && snapshot.stale.age, '15 分钟前');
+  assert.match(snapshot.stale.text, /病娇文/);
+  assert.deepEqual(seqs(snapshot.latest), [1, 2, 3]);
+  assert.equal(snapshot.latest[0].expired, true);
+  assert.ok(snapshot.now, '快照必须带当前时间，否则 age 没有参照');
+  // 水位仍以最老的未读为准，stale 只是提示，不是静默确认。
+  assert.equal(snapshot.readThroughSeq, 3);
+  const unread = await request('unread');
+  assert.deepEqual(unread.data.messages.map((m) => m.age), ['15 分钟前', '刚刚', '刚刚']);
 });
 
 await test('snapshot recent history stays chronological and does not duplicate unread', async ({ h, request, append }) => {
