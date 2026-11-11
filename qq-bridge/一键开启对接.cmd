@@ -1,15 +1,15 @@
 @echo off
 chcp 936 >nul
-title qq-bridge Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô½ï¿½
-set "NODE=%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
+title qq-bridge Ò»¼ü¿ªÆô¶Ô½Ó
+set "NODE=C:\Users\25240\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
 if not exist "%NODE%" set "NODE=node"
 echo ================================================
-echo   qq-bridge Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô½ï¿½
-echo   ï¿½ï¿½ï¿½ï¿½ï¿½Î¼ï¿½é²¢ï¿½ï¿½ï¿½ï¿½: DSH ^> QQ ^> SnowLuma ^> ï¿½ï¿½ï¿½ï¿½Ë¿ï¿½ ^> ï¿½Å½ï¿½ ^> ï¿½ï¿½ï¿½Å¹ï¿½
+echo   qq-bridge Ò»¼ü¿ªÆô¶Ô½Ó
+echo   ½«ÒÀ´Î¼ì²é²¢Æô¶¯: DSH ^> QQ ^> SnowLuma ^> ¶ÔÆë¶Ë¿Ú ^> ÇÅ½Ó ^> ¿´ÃÅ¹·
 echo ================================================
 echo.
 "%NODE%" "%~dp0scripts\autostart.mjs"
 echo.
 if /i "%~1"=="--no-pause" exit /b 0
-echo ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø±Õ´ï¿½ï¿½ï¿½...
+echo °´ÈÎÒâ¼ü¹Ø±Õ´°¿Ú...
 pause >nul
