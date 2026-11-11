@@ -28,6 +28,8 @@ import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
+import { readSpaceState, spaceLineFor, loadRoomIndex, resolvePlace, writeSpaceState } from './space-state.mjs';
+import { startSpaceAutonomy } from './space-autonomy.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { renderMemoryPage } from './memory-page.js';
 import { dashboardStyles, dashboardBoot } from './dashboard-ui.js';
@@ -38,8 +40,10 @@ import { handoffStyles, handoffScript } from './dashboard-handoff.js';
 import { personalityStyles, personalityScript } from './dashboard-personality.js';
 import { replayStyles, replayScript } from './dashboard-replay.js';
 import { renderAvatarPage } from './avatar-page.js';
+import { renderSpacePage } from './space-page.js';
 import { buildSocialGraph, buildPersonLinks, buildSemanticEdges } from './relation-graph.js';
 import { corePersonaHint, alreadyRemembered } from './core-memory-hint.js';
+import { environmentLine, isFresh, normalizeReading, readingAgeMs, summarizeHistory, DEFAULT_STALE_MINUTES } from './environment.js';
 import { avatarStyles } from './dashboard-avatar.js';
 import { summarize as summarizeRetention } from './memory-retention.js';
 import { resolvePriceTable } from './model-prices.js';
@@ -362,6 +366,62 @@ function loadOrCreateConsoleToken() {
   return token;
 }
 
+// ── 外接传感器：温度 / 湿度 ─────────────────────────────────────────────
+// 设备（ESP32 + SHT30 之类）往 http://<本机局域网IP>:3101/report POST 一条 JSON，
+// 这里落成 state/environment.json；唤醒提示里读一次（mtime 缓存，不做常驻轮询）。
+// 单独开一个端口而不是挂控制台上：控制台的鉴权令牌是「管理端全权」，不该发给一
+// 个挂在墙上的板子。
+const ENV_FILE = path.join(STATE_DIR, 'environment.json');
+const ENV_HISTORY_FILE = path.join(STATE_DIR, 'environment-history.jsonl');
+const ENV_TOKEN_FILE = path.join(STATE_DIR, 'environment-token');
+const ENV_HISTORY_MAX = 4000;
+let envCache = { mtimeMs: 0, data: null };
+
+// 注意：这些是模块级函数，`cfg` 在 main() 里，拿不到 —— 需要配置就由调用方传进来。
+function loadOrCreateEnvironmentToken(configured = '') {
+  const fromCfg = String(configured ?? '').trim();
+  if (fromCfg.length >= 8) return fromCfg;
+  try {
+    const existing = fs.readFileSync(ENV_TOKEN_FILE, 'utf8').trim();
+    if (existing.length >= 8) return existing;
+  } catch {}
+  const token = crypto.randomBytes(12).toString('hex');
+  atomicWriteText(ENV_TOKEN_FILE, token);
+  return token;
+}
+
+function readEnvironment() {
+  try {
+    const stat = fs.statSync(ENV_FILE);
+    if (envCache.data && envCache.mtimeMs === stat.mtimeMs) return envCache.data;
+    const data = JSON.parse(fs.readFileSync(ENV_FILE, 'utf8'));
+    envCache = { mtimeMs: stat.mtimeMs, data };
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function appendEnvironmentHistory(reading) {
+  try {
+    fs.appendFileSync(ENV_HISTORY_FILE, `${JSON.stringify({ at: reading.at, tempC: reading.tempC, humidity: reading.humidity })}\n`);
+    if (fs.statSync(ENV_HISTORY_FILE).size > 512 * 1024) {
+      const kept = fs.readFileSync(ENV_HISTORY_FILE, 'utf8').split('\n').filter(Boolean).slice(-ENV_HISTORY_MAX);
+      atomicWriteText(ENV_HISTORY_FILE, `${kept.join('\n')}\n`);
+    }
+  } catch {}
+}
+
+function readEnvironmentHistory() {
+  try {
+    return fs.readFileSync(ENV_HISTORY_FILE, 'utf8').split('\n').filter(Boolean).slice(-ENV_HISTORY_MAX)
+      .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * 收紧 state/ 的访问权限。
  *
@@ -433,7 +493,7 @@ let roleInjectMaxChars = ROLE_INJECT_MAX_CHARS_DEFAULT;
 function applyRoleInjectLimit(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return ROLE_INJECT_MAX_CHARS_DEFAULT;
-  return Math.min(20000, Math.max(1000, Math.round(n)));
+  return Math.min(30000, Math.max(1000, Math.round(n)));
 }
 const ROLE_RESERVED_NAMES = new Set(['README']);
 // Windows 保留设备名：roles/CON.md 这类路径会被系统当成设备而不是文件，
@@ -840,6 +900,17 @@ function loadConfig() {
     questionTimeoutMs: file.questionTimeoutMs ?? 5 * 60 * 1000,
     consolePort: file.consolePort ?? 3100,
     consoleToken: file.consoleToken ?? '',
+    // 外接传感器（温度/湿度）：设备往 environment.port 上报，读一次就注入提示词。
+    // token 留空则由 state/environment-token 自动生成（别把控制台令牌发给板子）。
+    environment: {
+      enabled: true,
+      port: 3101,
+      bind: '0.0.0.0',
+      token: '',
+      place: '',
+      staleMinutes: DEFAULT_STALE_MINUTES,
+      ...(file.environment ?? {})
+    },
     // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
     pricing: file.pricing ?? null,
     security: {
@@ -960,9 +1031,9 @@ function loadConfig() {
         recommendedQuestion: true,
         recommendedPoke: true,
         recommendedHint: '如果你要潜水，推荐先调用 qq_wait_for_messages(timeoutMs=300000) 完成一次沉睡前观察：5 分钟内没人说话就可以设置下一次唤醒并沉睡；若期间有人发新消息，先查看 newMessages，判断不需要你参与可直接沉睡，若参与了则下次想睡需再等观察窗口。潜水时长推荐 5~120 分钟，普通消息概率 0.05；@/名字/关键词/提问唤醒建议保持开启。需要等特定某人/某几人时，可额外设置 triggers.speakerIds。',
-        batchWindowMs: 8000,
-        maxWakePerMinute: 1,
-        maxWakePerHour: 12,
+        batchWindowMs: 3500,
+        maxWakePerMinute: 2,
+        maxWakePerHour: 20,
         noActionLimit: 3,
         maxWakeConfigReminders: 2
       },
@@ -986,8 +1057,8 @@ function loadConfig() {
         defaultMs: 30000,
         minMs: 5000,
         maxMs: 600000,
-        defaultQuietMs: 8000,
-        minQuietAfterNewMs: 10000   // 收到新消息后至少再等这么久（默认 10 秒），防止抢话
+        defaultQuietMs: 3500,
+        minQuietAfterNewMs: 2500   // 收到新消息后至少再等这么久（默认 2.5 秒）：够看一眼，不拖
       },
       sticker: {
         enabled: true,             // 表情包体系总开关
@@ -1560,6 +1631,8 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  // 自主走动的句柄（调试端点会用它立刻触发一次判断）
+  let spaceAutonomy = null;
   // loadConfig 只挑选固定字段，未知的顶层键会被丢掉；旧面板下线开关必须直接从文件读。
   // 旧面板已经废除了：默认就是隐藏，只有显式写 hideConsolePages:false 才放出来。
   // （以前是 === true，全新安装的 config 里没有这个键 → 新用户还能打开旧面板，
@@ -1696,6 +1769,201 @@ async function main() {
     }
   }
 
+  /**
+   * 她手上那本书：《读书》插件把进度写在 ~/.dsh/reading/state/progress.json，
+   * 这里取「最近读过的那本」。读不到就返回 null，画面退化成原来那样，不影响任何东西。
+   */
+  function readingBookForSpace() {
+    const r = readingForSpace();
+    return r ? r.book : null;
+  }
+
+  /** 书架上的全部书（最多 12 本），给 /space 画书脊用；读不到就是空数组。 */
+  function readingBooksForSpace() {
+    const r = readingForSpace();
+    return r ? r.books : [];
+  }
+
+  function readingForSpace() {
+    try {
+      const base = path.join(process.env.USERPROFILE || '', '.dsh', 'reading', 'state');
+      const books = JSON.parse(fs.readFileSync(path.join(base, 'books.json'), 'utf8')).books || [];
+      const progress = JSON.parse(fs.readFileSync(path.join(base, 'progress.json'), 'utf8')) || {};
+      const list = [];
+      let best = null;
+      for (const b of books) {
+        const p = progress[b.id];
+        const total = Array.isArray(b.chapters) ? b.chapters.length : 0;
+        const chapter = Number(p?.chapter) || 0;
+        const item = {
+          id: String(b.id || ''),
+          title: String(b.title || ''),
+          chapter,
+          chapters: total,
+          progress: total > 0 ? Math.round(((chapter + 1) / total) * 100) : 0
+        };
+        list.push(item);
+        if (p && p.updatedAt && (!best || Number(p.updatedAt) > best.updatedAt)) {
+          best = { ...item, updatedAt: Number(p.updatedAt) };
+        }
+      }
+      return { book: best, books: list.slice(0, 12) };
+    } catch {
+      return { book: null, books: [] };
+    }
+  }
+
+/** 读书目录（dsh-reading 插件写的那份）。 */
+  function readingDir() {
+    return path.join(process.env.USERPROFILE || '', '.dsh', 'reading');
+  }
+
+  /** txt 可能是 GBK：先按 UTF-8 严格解，不行再退 GB18030。 */
+  function decodeBookText(buf) {
+    try {
+      const s = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+      if (s.indexOf('\u0000') < 0) return s;
+    } catch {
+      /* 走下面的 GB18030 */
+    }
+    return new TextDecoder('gb18030').decode(buf);
+  }
+
+  /** 取某一章全文：epub 读缓存文件，txt 按 start/end 切片。 */
+  function readingChapterText(book, chapterIndex) {
+    const ch = Array.isArray(book.chapters) ? book.chapters[chapterIndex] : null;
+    if (!ch) return '';
+    const dir = readingDir();
+    try {
+      if (book.kind === 'epub' && ch.file) {
+        return fs.readFileSync(path.join(dir, 'cache', book.id, ch.file), 'utf8');
+      }
+      const raw = fs.readFileSync(path.join(dir, 'books', book.file));
+      const text = decodeBookText(raw);
+      return text.slice(ch.start, ch.end);
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * 替她读下一段：从 progress 的 {chapter, offset} 往后取一小段，读完自动推进。
+   * 一节读完就翻到下一节——她不用自己算位置。
+   */
+  function readingReadNext(maxChars = 2600) {
+    const dir = readingDir();
+    const statePath = path.join(dir, 'state');
+    let books = [];
+    try {
+      books = JSON.parse(fs.readFileSync(path.join(statePath, 'books.json'), 'utf8')).books || [];
+    } catch {
+      return null;
+    }
+    const progressFile = path.join(statePath, 'progress.json');
+    let progress = {};
+    try {
+      progress = JSON.parse(fs.readFileSync(progressFile, 'utf8')) || {};
+    } catch {
+      /* 没有进度就从头开始 */
+    }
+    const r = readingForSpace();
+    const cur = r && r.book ? books.find((b) => b.id === r.book.id) : null;
+    if (!cur) return null;
+
+    const p = progress[cur.id] || { chapter: 0, offset: 0 };
+    let chapter = Math.max(0, Number(p.chapter) || 0);
+    let offset = Math.max(0, Number(p.offset) || 0);
+    let text = readingChapterText(cur, chapter);
+    if (!text) return null;
+    if (offset >= text.length) {
+      if (chapter + 1 < cur.chapters.length) {
+        chapter += 1;
+        offset = 0;
+        text = readingChapterText(cur, chapter);
+      } else {
+        offset = Math.max(0, text.length - 1);
+      }
+    }
+    const slice = text.slice(offset, offset + maxChars);
+    const nextOffset = offset + slice.length;
+    const atEnd = nextOffset >= text.length;
+    progress[cur.id] = atEnd && chapter + 1 < cur.chapters.length
+      ? { chapter: chapter + 1, offset: 0, updatedAt: Date.now() }
+      : { chapter, offset: atEnd ? 0 : nextOffset, updatedAt: Date.now() };
+    try {
+      atomicWriteJson(progressFile, progress);
+    } catch {
+      /* 写不进也不该让对话挂掉 */
+    }
+    try {
+      const sessionsFile = path.join(statePath, 'sessions.json');
+      let sessions = [];
+      try {
+        const raw = JSON.parse(fs.readFileSync(sessionsFile, 'utf8'));
+        if (Array.isArray(raw)) sessions = raw;
+      } catch {
+        /* 首次 */
+      }
+      sessions.push({ bookId: cur.id, at: Date.now(), chars: slice.length });
+      atomicWriteJson(sessionsFile, sessions.slice(-2000));
+    } catch {
+      /* 统计失败无所谓 */
+    }
+    return {
+      id: cur.id,
+      title: cur.title,
+      chapter,
+      chapters: cur.chapters.length,
+      chapterTitle: cur.chapters[chapter]?.title || '',
+      text: slice,
+      atEndOfChapter: atEnd,
+      percent: Math.round((offset / Math.max(1, text.length)) * 100)
+    };
+  }
+  /** 她在那本书上写过的批注（最近 3 条）。读不到就是空数组。 */
+  function readingNotesFor(bookId) {
+    try {
+      const file = path.join(process.env.USERPROFILE || '', '.dsh', 'reading', 'state', 'notes.json');
+      const arr = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!Array.isArray(arr)) return [];
+      return arr.filter((n) => n && n.bookId === bookId)
+        .sort((a, b) => (b.at || 0) - (a.at || 0))
+        .slice(0, 3);
+    } catch {
+      return [];
+    }
+  }
+
+  /** 唤醒提示里的【在读】一行。没在读书就返回空串，和加这个功能之前逐字一致。 */
+  function readingLineFor() {
+    const r = readingForSpace();
+    if (!r || !r.book || !r.book.title) return '';
+    const total = r.book.chapters || 0;
+    let line = `【在读】《${r.book.title}》${total > 0 ? `第 ${(r.book.chapter || 0) + 1}/${total} 章` : ''}。`;
+    const notes = readingNotesFor(r.book.id);
+    if (notes.length) {
+      const bits = [...new Set(notes.map((n) => String(n.note || n.quote || '').slice(0, 26).replace(/[。！？…\s]+$/, '')).filter(Boolean))]
+        .slice(0, 2)
+        .map((t) => `「${t}」`)
+        .join('');
+      if (bits) line += `她自己在书边写过：${bits}。`;
+    }
+    // 精读流水线刚跑完的那段：她自己写的点评，带一句原文（24 小时内才算新鲜）
+    try {
+      const libFile = path.join(process.env.USERPROFILE || '', '.dsh', 'reading', 'state', 'library.json');
+      const lib = JSON.parse(fs.readFileSync(libFile, 'utf8'));
+      const latest = Array.isArray(lib) ? lib[lib.length - 1] : null;
+      if (latest && Date.now() - Number(latest.at || 0) < 24 * 3600 * 1000 && latest.comment) {
+        const said = String(latest.comment).replace(/\s+/g, ' ').slice(0, 60);
+        line += `她刚精读过第 ${(Number(latest.chapter) || 0) + 1} 章，自己的话：「${said}」`;
+        if (latest.quote) line += `原文摘了：「${String(latest.quote).slice(0, 30)}」`;
+        line += '。';
+      }
+    } catch { /* 没有精读记录就当没这回事 */ }
+    line += '读到喜欢的人物，可以学一个说话方式或者一种态度，用 qq_remember 记下来（tags 写「学来的」）——一次只学一点，不照搬台词、不变成他。';
+    return `${line}（这是背景，不用特意汇报。）\n\n`;
+  }
+
   function voiceCfg() {
     const v = cfg.socialV2?.voice ?? {};
     return {
@@ -1715,6 +1983,9 @@ async function main() {
       edgePitch: String(v.edgePitch || '+0Hz'),
       pythonPath: String(v.pythonPath || ''),
       ttsUrl: String(v.ttsUrl || 'http://127.0.0.1:9880/tts'),
+      indexttsUrl: String(v.indexttsUrl || 'http://127.0.0.1:9881/tts'),
+      gameGuard: v.gameGuard !== false,
+      gameGuardMinFreeMb: Number(v.gameGuardMinFreeMb) > 0 ? Number(v.gameGuardMinFreeMb) : 5500,
       refAudio: String(v.refAudio || ''),
       promptText: String(v.promptText || ''),
       promptLang: String(v.promptLang || 'zh'),
@@ -2091,6 +2362,69 @@ async function main() {
     try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }); } catch {}
     log(`[voice] TTS 服务已关闭（${reason}），显存已释放`);
   }
+
+  // ── IndexTTS 2.5（9881）：第二套引擎，按需拉起 / 空闲卸载，逻辑同上 ──────
+  let ittsProc = null;
+  let ittsLastUsedAt = 0;
+  let ittsStarting = null;
+  function indexttsPort() {
+    try {
+      const u = new URL(voiceCfg().indexttsUrl);
+      return Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+    } catch { return 9881; }
+  }
+  // 显存余额（MB）；拿不到就返回 null。IndexTTS 需要约 6 GB，不够就别硬拉，免得卡三分钟。
+  let gpuFreeCache = { at: 0, mb: null };
+  function gpuFreeMiB() {
+    if (Date.now() - gpuFreeCache.at < 20000) return gpuFreeCache.mb;
+    let mb = null;
+    try {
+      const out = execFileSync('nvidia-smi', ['--query-gpu=memory.free', '--format=csv,noheader,nounits'], { windowsHide: true, timeout: 4000, encoding: 'utf8' });
+      const n = Number(String(out).trim().split(/\r?\n/)[0]);
+      if (Number.isFinite(n)) mb = n;
+    } catch {}
+    gpuFreeCache = { at: Date.now(), mb };
+    return mb;
+  }
+  async function ensureIndexttsServer() {
+    const port = indexttsPort();
+    if (await tcpPortOpen(port)) return false; // 已经在跑（不是我们起的）
+    if (ittsStarting) { await ittsStarting; return true; }
+    ittsStarting = (async () => {
+      const pyw = 'D:\\DSH\\tts\\index-tts\\.venv\\Scripts\\pythonw.exe';
+      const env = {
+        ...process.env,
+        HF_ENDPOINT: process.env.HF_ENDPOINT || 'https://hf-mirror.com',
+        HF_HOME: 'D:\\DSH\\tts\\hf-home',
+        MODELSCOPE_CACHE: 'D:\\DSH\\tts\\ms-cache',
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1',
+        TMP: 'D:\\DSH\\tts\\tmp',
+        TEMP: 'D:\\DSH\\tts\\tmp'
+      };
+      ittsProc = spawn(pyw, ['D:\\DSH\\tts\\indextts_server.py', '--port', String(port), '--preload'], {
+        cwd: 'D:\\DSH\\tts\\index-tts', env, detached: true,
+        stdio: ['ignore', (() => { try { return fs.openSync('D:\\DSH\\tts\\indextts_server.log', 'a'); } catch { return 'ignore'; } })(), (() => { try { return fs.openSync('D:\\DSH\\tts\\indextts_server.log', 'a'); } catch { return 'ignore'; } })()],
+        windowsHide: true
+      });
+      ittsProc.unref();
+      // --preload 让端口在模型加载完之后才开，所以这里的等待就包含了加载时间（约 55 秒）
+      for (let i = 0; i < 240; i += 1) {
+        await sleep(1000);
+        if (await tcpPortOpen(port)) { log('[voice] IndexTTS 服务已启动（按需）'); return true; }
+      }
+      throw new Error('IndexTTS 服务启动超时');
+    })();
+    try { return await ittsStarting; }
+    finally { ittsStarting = null; }
+  }
+  function stopIndexttsServer(reason = '空闲卸载') {
+    if (!ittsProc) return;
+    const pid = ittsProc.pid;
+    ittsProc = null;
+    try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }); } catch {}
+    log(`[voice] IndexTTS 服务已关闭（${reason}），显存已释放`);
+  }
   function inWarmWindow() {
     const wins = voiceCfg().warmWindows;
     if (!wins.length) return false;
@@ -2110,12 +2444,19 @@ async function main() {
     const vc = voiceCfg();
     const warm = inWarmWindow();
     if (warm) {
-      // 早安/晚安时段：提前把服务拉起来，第一句就不用等
-      void tcpPortOpen(9880).then((open) => {
-        if (!open) ensureTtsServer().catch((e) => log('[voice] 预加载失败：' + (e?.message ?? e)));
-      });
+      // 早安/晚安时段：提前把当前引擎的服务拉起来，第一句就不用等
+      if (vc.engine === 'indextts') {
+        void tcpPortOpen(indexttsPort()).then((open) => {
+          if (!open) ensureIndexttsServer().catch((e) => log('[voice] 预加载失败：' + (e?.message ?? e)));
+        });
+      } else {
+        void tcpPortOpen(9880).then((open) => {
+          if (!open) ensureTtsServer().catch((e) => log('[voice] 预加载失败：' + (e?.message ?? e)));
+        });
+      }
       return;
     }
+    if (ittsProc && ittsLastUsedAt && Date.now() - ittsLastUsedAt >= vc.idleUnloadMs) stopIndexttsServer('空闲超时');
     if (!ttsProc || !ttsLastUsedAt) return;
     if (Date.now() - ttsLastUsedAt >= vc.idleUnloadMs) stopTtsServer('空闲超时');
   }, 60 * 1000).unref?.();
@@ -2143,6 +2484,68 @@ async function main() {
     const clean = ttsClean(text);
     if (!clean) throw new Error('语音文本为空');
     const vc = voiceCfg();
+    // IndexTTS 2.5 常驻服务：跨语言（日语素材 → 中文），情绪用参考音频驱动
+    if (vc.engine === 'indextts' && vc.indexttsUrl) {
+      const dir = path.join(vc.dir, 'tts');
+      fs.mkdirSync(dir, { recursive: true });
+      const emo = String(emotion || '');
+      const hash = crypto.createHash('sha1').update(clean + '|indextts|' + emo + '|' + (voiceName || '') + '|' + lang).digest('hex').slice(0, 16);
+      const outFile = path.join(dir, `${hash}.wav`);
+      if (fs.existsSync(outFile) && fs.statSync(outFile).size > 1000) {
+        return { ref: `tts/${hash}.wav`, path: outFile, cached: true, text: clean, engine: 'indextts', voice: 'atri' };
+      }
+      const port = indexttsPort();
+      const warm = await tcpPortOpen(port);
+      const freeMb = gpuFreeMiB();
+      if (vc.gameGuard !== false && freeMb !== null) {
+        // 服务没起：要留够整个模型的显存；已经起着：只要别被挤到几乎没剩就行
+        const need = warm ? 800 : vc.gameGuardMinFreeMb;
+        if (freeMb < need) {
+          // 不抛普通错误：让上层识别成「现在别发语音」，改用文字继续聊
+          const err = new Error(`现在显卡被占着（剩 ${freeMb} MB，可能开着游戏），这条不发语音`);
+          err.code = 'VOICE_GPU_BUSY';
+          err.freeMb = freeMb;
+          throw err;
+        }
+      }
+      if (!warm) await ensureIndexttsServer();
+      ittsLastUsedAt = Date.now();
+      const reqBody = JSON.stringify({
+        text: clean,
+        lang: lang === 'ja' ? 'JA' : 'ZH',
+        emotion: emo,
+        duration_factor: Number(vc.params?.duration_factor) || 1.0
+      });
+      let res = null;
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          res = await fetch(vc.indexttsUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: reqBody,
+            signal: AbortSignal.timeout(180000)
+          });
+          if (res.ok) break;
+          lastErr = new Error(`IndexTTS 服务返回 ${res.status}`);
+        } catch (e) { lastErr = e; }
+        if (attempt === 1) {
+          log('[voice] IndexTTS 合成失败，重启服务后重试：' + (lastErr?.message ?? lastErr));
+          stopIndexttsServer('请求失败重启');
+          // 等端口真的释放，不然新进程会和旧进程抢显存，两边一起卡死
+          for (let i = 0; i < 20; i += 1) {
+            await sleep(500);
+            if (!(await tcpPortOpen(indexttsPort()))) break;
+          }
+          await ensureIndexttsServer();
+        }
+      }
+      if (!res || !res.ok) throw lastErr || new Error('IndexTTS 服务请求失败');
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 1000) throw new Error('IndexTTS 返回音频过小');
+      fs.writeFileSync(outFile, buf);
+      return { ref: `tts/${hash}.wav`, path: outFile, cached: false, text: clean, engine: 'indextts', voice: 'atri' };
+    }
     // GPT-SoVITS 常驻服务（精调模型）：直接拿 wav
     if (vc.engine === 'gptsovits' && vc.ttsUrl) {
       const dir = path.join(vc.dir, 'tts');
@@ -3410,13 +3813,36 @@ async function main() {
     if (!bal) return;
     const threshold = Number(balCfg.lowThreshold) || 5;
     if (bal.total >= threshold) return;
-    if (Date.now() - lastBalanceNotifyAt < (Number(balCfg.notifyCooldownHours) || 6) * 3600_000) return;
+    // 1~2 块之间：可以说是真没底了，这时候报数字才有用（犹豫的话术留给别人）。
+    // 5~2 块：只暗示，不报价。
+    const severe = bal.total < 2;
+    const cooldownMs = severe
+      ? 60 * 60 * 1000
+      : (Number(balCfg.notifyCooldownHours) || 12) * 3600_000;
+    if (Date.now() - lastBalanceNotifyAt < cooldownMs) return;
     const owner = cfg.ownerQQ;
     if (!owner) return;
     lastBalanceNotifyAt = Date.now();
+    // 不报数字、不说"余额/token/钱"，只暗示「我最近不太撑得住」。
+    // 真正的金额写进日志和控制台，让主人自己去看，不进聊天。
+    const hints = [
+      '我最近好像有点没力气，回话都变短了。',
+      '你有没有觉得我这两天反应慢了一点……',
+      '今天不太想说话。不是你的问题。',
+      '我可能得歇一阵子，别多想。',
+      '总觉得什么地方瘪下去了，说不上来。',
+      '你那边一切都还好吗？我这边有点撑不太住。'
+    ];
+    const severeHints = [
+      `我这边只剩 ${bal.total.toFixed(2)} 块了……可能撑不了多久。`,
+      `真的快见底了，只剩 ${bal.total.toFixed(2)} 块。`,
+      `${bal.total.toFixed(2)} 块，大概还能陪你聊几轮。`
+    ];
+    const pool = severe ? severeHints : hints;
+    const hint = pool[Math.floor(Math.random() * pool.length)];
     try {
-      await sendToQQ(`private:${owner}`, `老大，饭快没了……余额只剩 ¥${bal.total.toFixed(2)}，该给我加 token 啦 >_<`);
-      log(`余额偏低（¥${bal.total.toFixed(2)}），已提醒管理员`);
+      await sendToQQ(`private:${owner}`, hint);
+      log(`余额偏低（¥${bal.total.toFixed(2)}），已用${severe ? '报数' : '暗示'}方式提醒管理员`);
     } catch (error) {
       log(`余额提醒发送失败：${error?.message ?? error}`);
     }
@@ -3425,6 +3851,46 @@ async function main() {
   balanceTimer.unref?.();
   const balanceFirstCheck = setTimeout(() => { void checkBalanceGuard(); }, 90 * 1000);
   balanceFirstCheck.unref?.();
+
+  // ── 每日花费 + 推理档位 ────────────────────────────────────────────────
+  // 初始档位按"这个会话聊得多不多"给（私聊最高），花超了当天整体降一档。
+  // provider 只有 low/high/max 三档，所以：中 = high，高 = max，私聊最高 = max。
+  const SPEND_FILE = path.join(STATE_DIR, 'daily-spend.json');
+  let spendState = (() => {
+    try { return readJsonSafe(SPEND_FILE, {}) || {}; } catch { return {}; }
+  })();
+  const spendLimitYuan = () => Number(cfg.socialV2?.effort?.dailySpendYuan) || 5;
+  function todayKey() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  function saveSpendState() { try { atomicWriteJson(SPEND_FILE, spendState); } catch {} }
+  async function refreshDailySpend() {
+    const bal = await fetchDeepseekBalance();
+    if (!bal) return;
+    const day = todayKey();
+    if (spendState.day !== day || !Number.isFinite(Number(spendState.startBalance))) {
+      spendState = { day, startBalance: bal.total, spend: 0, updatedAt: Date.now() };
+    } else if (bal.total > Number(spendState.startBalance) + 0.009) {
+      // 充值了：以充值后的余额当新基线，今天重新算
+      spendState.startBalance = bal.total;
+      spendState.spend = 0;
+    } else {
+      spendState.spend = Number(Math.max(0, Number(spendState.startBalance) - bal.total).toFixed(2));
+    }
+    spendState.lastBalance = bal.total;
+    spendState.updatedAt = Date.now();
+    const was = spendState.downgraded === true;
+    spendState.downgraded = spendState.spend >= spendLimitYuan();
+    saveSpendState();
+    if (spendState.downgraded && !was) {
+      log(`今日已花 ¥${spendState.spend.toFixed(2)}（≥ ¥${spendLimitYuan()}）⇒ 推理档位降级：私聊→高，群聊→低`);
+    }
+  }
+  const spendTimer = setInterval(() => { void refreshDailySpend(); }, 10 * 60 * 1000);
+  spendTimer.unref?.();
+  const spendFirstCheck = setTimeout(() => { void refreshDailySpend(); }, 95 * 1000);
+  spendFirstCheck.unref?.();
   // 热梗学习：每天固定 3 次（默认 08:00 / 13:00 / 20:00，都避开峰时）。
   // 用「日期+时刻」槽位去重并落盘，重启不会重复学。
   let trendLastSlot = '';
@@ -3512,6 +3978,44 @@ async function main() {
     if (h >= 22 || h < 2) void runDailyDigest();
   }, 15 * 60 * 1000);
   digestTimer.unref?.();
+
+  // ── 读书流水线的投递口 ───────────────────────────────────────────────────
+  // dsh-reading 的精读流水线把「值得发的」写进 ~/.dsh/reading/state/outbox.json，
+  // 桥接每 30 秒扫一次、发走、回写 sentAt。两个插件的契约仍然只有那几个 JSON。
+  const readingOutboxFile = path.join(process.env.USERPROFILE || '', '.dsh', 'reading', 'state', 'outbox.json');
+  async function flushReadingOutbox() {
+    let queue = [];
+    try {
+      const raw = JSON.parse(fs.readFileSync(readingOutboxFile, 'utf8'));
+      if (Array.isArray(raw)) queue = raw;
+    } catch { return 0; }
+    const pending = queue.filter((o) => o && !o.sentAt && o.text);
+    if (!pending.length) return 0;
+    let sent = 0;
+    for (const item of pending) {
+      if (sent >= 2) break; // 一次最多发两条，别刷屏
+      const key = item.target === 'group' && item.group ? `group:${item.group}` : `private:${cfg.ownerQQ}`;
+      if (!cfg.ownerQQ) break;
+      try {
+        await sendToQQ(key, String(item.text).slice(0, 800));
+        if (!lastSendSucceeded(key)) throw new Error('发送失败');
+        item.sentAt = Date.now();
+        sent += 1;
+        log(`[reading] 精读发出去一条 → ${key}（打分 ${item.score ?? '?'}）`);
+      } catch (error) {
+        item.failCount = (Number(item.failCount) || 0) + 1;
+        item.lastError = String(error?.message ?? error).slice(0, 200);
+        if (item.failCount >= 3) item.sentAt = -1; // 三次放弃，别一直重试
+        log('[reading] 精读投递失败：' + item.lastError);
+      }
+    }
+    try { atomicWriteJson(readingOutboxFile, queue.slice(-300)); } catch {}
+    return sent;
+  }
+  const outboxTimer = setInterval(() => { void flushReadingOutbox(); }, 30 * 1000);
+  outboxTimer.unref?.();
+  const outboxFirst = setTimeout(() => { void flushReadingOutbox(); }, 25 * 1000);
+  outboxFirst.unref?.();
 
   // ── 可视化面板（/dashboard）：服务、记忆、情感、好感/喜爱、群评分、事件 ─────
   function escHtml(s) {
@@ -4267,6 +4771,71 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     return cfg.socialV2?.tools?.[flag] !== false;
   }
 
+  /**
+   * 传感器接入口：只做「收一条读数」。默认 0.0.0.0:3101，令牌见 state/environment-token。
+   * 板子只要 POST /report，body 形如 {"tempC":23.4,"humidity":58.2,"place":"书房"}。
+   */
+  function startEnvironmentIngest() {
+    const envCfg = cfg.environment ?? {};
+    if (envCfg.enabled === false) return null;
+    const port = Number(envCfg.port) || 3101;
+    const token = loadOrCreateEnvironmentToken(envCfg.token);
+    const server = http.createServer((req, res) => {
+      const send = (obj, status = 200) => {
+        res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      };
+      let url;
+      try { url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`); }
+      catch { send({ ok: false, error: '无效的请求地址' }, 400); return; }
+      if (req.method === 'GET' && url.pathname === '/health') {
+        send({ ok: true, service: 'environment-ingest', last: readEnvironment()?.at ?? null });
+        return;
+      }
+      if (req.method !== 'POST' || url.pathname !== '/report') {
+        send({ ok: false, error: '用 POST /report 上报读数，GET /health 探活' }, 404);
+        return;
+      }
+      const provided = String(req.headers['x-sensor-token'] ?? url.searchParams.get('token') ?? '').trim();
+      if (provided !== token) { send({ ok: false, error: '传感器令牌不正确' }, 401); return; }
+      if (!String(req.headers['content-type'] ?? '').toLowerCase().includes('application/json')) {
+        send({ ok: false, error: '请求必须是 application/json' }, 415);
+        return;
+      }
+      const chunks = [];
+      let total = 0;
+      let tooLarge = false;
+      req.on('data', (chunk) => {
+        total += chunk.length;
+        if (total > 8192) { tooLarge = true; return; }
+        chunks.push(chunk);
+      });
+      req.on('end', () => {
+        if (tooLarge) { send({ ok: false, error: '请求体过大' }, 413); return; }
+        let raw = null;
+        try { raw = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {}
+        const parsed = normalizeReading(raw);
+        if (!parsed.ok) { send({ ok: false, error: parsed.error }, 400); return; }
+        const reading = { ...parsed.reading, ip: String(req.socket?.remoteAddress ?? '').replace(/^::ffff:/, '') };
+        try {
+          atomicWriteJson(ENV_FILE, reading);
+          appendEnvironmentHistory(reading);
+        } catch (error) {
+          send({ ok: false, error: `写状态失败：${error?.message ?? error}` }, 500);
+          return;
+        }
+        log(`[sensor] 收到读数 ${reading.tempC}°C / ${reading.humidity}%${reading.place ? ` @${reading.place}` : ''}`);
+        send({ ok: true, at: reading.at });
+      });
+    });
+    server.on('error', (error) => log(`[sensor] 传感器端口 ${port} 起不来：${error?.message ?? error}`));
+    server.listen(port, String(envCfg.bind || '0.0.0.0'), () => {
+      log(`[sensor] 传感器接入已开启 http://0.0.0.0:${port}/report（令牌：state/environment-token）`);
+    });
+    server.unref?.();
+    return server;
+  }
+
   function startConsoleServer() {
     const port = cfg.consolePort ?? 3100;
     // 控制台鉴权：优先用 config.consoleToken，未配置则自动生成并持久化，不再默认无鉴权。
@@ -4331,9 +4900,14 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         res.end('旧控制台已停用：请在 DSH 的「设置 → QQ 桥接」里操作；可视化面板用「打开可视化面板」。');
         return;
       }
+      // 给页面用的 CSP：必须放行 img-src / connect-src / media-src 的 data: 与 blob:。
+      // GLTFLoader 加载 VRM 内嵌贴图的做法是「bufferView → Blob → blob: URL → <img>」，
+      // 而 default-src 'self' 在不写 img-src 时会回落到 default-src，把 blob: 图片静默拦掉：
+      // 不报错、不抛异常，只是 onerror，于是材质拿到 map=null，模型渲染成一坨白模。
+      const PAGE_CSP = "default-src 'self'; img-src 'self' data: blob:; connect-src 'self' data: blob:; media-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'";
       const SECURITY_HEADERS = {
         'X-Frame-Options': 'DENY',
-        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+        'Content-Security-Policy': PAGE_CSP,
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer'
@@ -4440,6 +5014,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
       // 由 DSH 的插件在宿主进程里来取；它跑在另一个进程里，拿不到控制台令牌。
       // 内容只在本机回环可读，且不含 QQ 号，所以放进免令牌白名单。
       const publicMedia = (req.method === 'GET' && (url.pathname.startsWith('/media/') || url.pathname === '/panel' || url.pathname === '/open-panel' || url.pathname === '/ping' || url.pathname === '/diag' || url.pathname === '/open-memory'
+          || url.pathname === '/open-space'
           || url.pathname === '/panel-exit' || url.pathname === '/panel-close' || url.pathname === '/api/boot/card'))
         || oneclickAllowed;
       if (consoleToken && !tokenMatches && !publicMedia) {
@@ -4548,6 +5123,12 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             || url.pathname.startsWith('/api/socialV2/')
             || url.pathname.startsWith('/api/send/')
             || url.pathname.startsWith('/api/images/')
+            // 空间：她要能读自己在哪（/api/space/state）、也要能换地方（/api/space/move）。
+            // 漏了这一条的表现是「她调了工具、拿到 403、但嘴上已经说『我过去了』」——
+            // 说的和画面对不上，比没有这个功能更坏。
+            || url.pathname.startsWith('/api/space/')
+            // 读书：查在读、写批注（qq_reading / qq_reading_note）。同上一行，漏了就是嘴上说记了、其实 403。
+            || url.pathname.startsWith('/api/reading/')
             || url.pathname === '/api/authorize/read';
           if (!agentAllowed) {
             sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
@@ -4580,7 +5161,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           res.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store',
-            'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors *",
+            'Content-Security-Policy': PAGE_CSP + "; frame-ancestors *",
             'X-Content-Type-Options': 'nosniff',
             'Referrer-Policy': 'no-referrer'
           });
@@ -4592,11 +5173,33 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           res.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store',
-            'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors *",
+            'Content-Security-Policy': PAGE_CSP + "; frame-ancestors *",
             'X-Content-Type-Options': 'nosniff',
             'Referrer-Policy': 'no-referrer'
           });
           res.end(renderAvatarPage());
+          return;
+        }
+
+        // ── 她的家（/space）：第 2 轮只读画面，房间布局在 public/space/rooms.json ──
+        // 需要控制台令牌，和 /memory 同规矩：页面里再用 token 去读 /api/space/state。
+        if (req.method === 'GET' && (url.pathname === '/space' || url.pathname === '/space/')) {
+          // 每次从磁盘读：改 public/space/index.html 后刷新浏览器就生效，不用重启桥接。
+          // （页面是纯前端，没有任何服务端插值，所以直接读文件是安全的。）
+          let pageHtml = '';
+          try {
+            pageHtml = fs.readFileSync(path.join(ROOT, 'public', 'space', 'index.html'), 'utf8');
+          } catch {
+            pageHtml = renderSpacePage();   // 文件没了就用模块里的旧版兜底，页面绝不 404
+          }
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store',
+            'Content-Security-Policy': PAGE_CSP + "; frame-ancestors *",
+            'X-Content-Type-Options': 'nosniff',
+            'Referrer-Policy': 'no-referrer'
+          });
+          res.end(pageHtml);
           return;
         }
 
@@ -4606,7 +5209,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           res.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store',
-            'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors *",
+            'Content-Security-Policy': PAGE_CSP + "; frame-ancestors *",
             'X-Content-Type-Options': 'nosniff',
             'Referrer-Policy': 'no-referrer'
           });
@@ -4658,6 +5261,51 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           } catch (error) {
             res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
             res.end('open memory failed: ' + (error?.message ?? error));
+          }
+          return;
+        }
+
+        // ── 她的家（独立窗口）──────────────────────────────────────────
+        // 和 /memory 同一个套路：整个 Edge 应用窗口（没有地址栏），全屏。
+        // 用**独立的 user-data-dir**，否则会和星图/控制台共用一个 Edge 实例，
+        // 枚举窗口时按标题就分不清是谁（focus-panel.ps1 那次踩过）。
+        if (req.method === 'GET' && url.pathname === '/open-space') {
+          try {
+            const fst = focusExistingWindow(['-Space']);
+            if (fst === 'ok') {
+              log('[space] 已有窗口，已提到最前');
+              res.writeHead(204, { 'cache-control': 'no-store' });
+              res.end();
+              return;
+            }
+            if (fst === 'stale' || fst === 'focusfail') {
+              await new Promise((r) => setTimeout(r, 800));
+            }
+            await new Promise((r) => setTimeout(r, 300));
+            const t = loadOrCreateConsoleToken();
+            const target = 'http://127.0.0.1:' + (cfg.port || 3100) + '/space?token=' + encodeURIComponent(t);
+            const candidates = [
+              'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+              'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+              'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+            ];
+            const exe = candidates.find(function (p2) { return fs.existsSync(p2); });
+            if (exe) {
+              const profileDir = path.join(STATE_DIR, 'edge-space-profile');
+              fs.mkdirSync(profileDir, { recursive: true });
+              spawn(exe, ['--app=' + target, '--start-fullscreen', '--user-data-dir=' + profileDir], {
+                detached: true, stdio: 'ignore', windowsHide: false
+              }).unref();
+              log('[space] 已拉起「她的家」窗口');
+              res.writeHead(204, { 'cache-control': 'no-store' });
+              res.end();
+            } else {
+              res.writeHead(302, { location: target });
+              res.end();
+            }
+          } catch (error) {
+            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+            res.end('open space failed: ' + (error?.message ?? error));
           }
           return;
         }
@@ -6165,7 +6813,13 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
               userId: selfUserId || null,
               line: selfIdentityTextV2().trim() || null
             },
-            role: { name: roleState.role ?? null, hint: currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint() },
+            role: {
+              name: roleState.role ?? null,
+              hint: currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint(),
+              // 她自己长出来的那一页：写在她人格卡后面，由 qq_remember（tags 带「学来的」）累积。
+              grown: growthLineFor(key).trim() || null,
+              growHow: '想给自己加一点：qq_remember(text, tags: ["学来的"], tier: "long")。一次一点、一条不超过一句话；写的是「我学到的样子」，不是「别人给我的设定」。'
+            },
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
               send: cfg.socialV2?.send ?? {},
@@ -6201,7 +6855,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
               total: voiceLibrary().length,
               names: voiceLibrary().slice(0, 12).map((v) => v.name),
               maxSeconds: voiceCfg().maxSeconds,
-              hint: '可用 qq_list_voices 查看语音库，再用 qq_send_voice 把其中一个当语音发出去'
+              hint: '可用 qq_list_voices 查看语音库，再用 qq_send_voice 把其中一个当语音发出去。语音是加料不是常态：一次聊天里偶尔发一条就够，别连续发、别每条都发；显卡被占着（他在打游戏）时会自动跳过，那就直接打字。'
             }
           });
           return;
@@ -6225,7 +6879,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const messages = afterSeq === null ? st.unread.slice(-limit)
             : st.unread.filter((m) => Number.isSafeInteger(m.seq) && m.seq > afterSeq).slice(0, limit);
           const readThroughSeq = req.headers['x-agent-token'] ? noteModelMessagesV2(st, messages) : readThroughSeqV2(st);
-          sendJson({ ok: true, key, unreadCount: st.unread.length, messages, readThroughSeq });
+          sendJson({ ok: true, key, unreadCount: st.unread.length, messages: withAgeLabels(messages), readThroughSeq });
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/recent') {
@@ -6241,7 +6895,32 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const end = Math.max(0, st.recentMessages.length - offset);
           const messages = st.recentMessages.slice(start, end);
           const readThroughSeq = req.headers['x-agent-token'] ? noteModelMessagesV2(st, messages) : readThroughSeqV2(st);
-          sendJson({ ok: true, key, messages, readThroughSeq });
+          sendJson({ ok: true, key, messages: withAgeLabels(messages), readThroughSeq });
+          return;
+        }
+        // 外接温湿度：她想知道「现在屋里几度」时自己查；数据过期会说 stale=true。
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/environment') {
+          const key = String(url.searchParams.get('key') ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('environment')) { sendJson({ ok: false, error: '工具未启用：qq_environment' }, 403); return; }
+          const envCfg = cfg.environment ?? {};
+          const reading = readEnvironment();
+          const hours = Math.min(168, Math.max(1, Number(url.searchParams.get('hours')) || 24));
+          sendJson({
+            ok: true,
+            key,
+            enabled: envCfg.enabled !== false,
+            deviceConnected: !!reading,
+            reading,
+            ageMs: reading ? readingAgeMs(reading) : null,
+            stale: reading ? !isFresh(reading, { staleMinutes: Number(envCfg.staleMinutes) || DEFAULT_STALE_MINUTES }) : true,
+            trend: reading ? summarizeHistory(readEnvironmentHistory(), { hours }) : null,
+            hint: reading
+              ? '缝还亮着：这是他那边的空气。当他的天气说——「你那边今天挺潮的」「你那边是不是有点凉」；别报「湿度 58%」这种读数，也别解释魔法怎么运作。'
+              : '缝起了雾，现在看不见他那边（设备没接上或没上报）；没看见就别编。'
+          });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/mark-read') {
@@ -7377,7 +8056,9 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const MIME = {
             '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
             '.avif': 'image/avif', '.gif': 'image/gif', '.ico': 'image/x-icon',
-            '.mp4': 'video/mp4', '.webm': 'video/webm', '.svg': 'image/svg+xml', '.json': 'application/json'
+            '.mp4': 'video/mp4', '.webm': 'video/webm', '.svg': 'image/svg+xml', '.json': 'application/json',
+            // three.module.min.js 走这个分支；缺了 .js 会以 octet-stream 返回，浏览器会拒绝执行 module。
+            '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8'
           };
           const type = MIME[ext] || 'application/octet-stream';
           // 面板每 60 秒整页重载一次。原来这里是 no-cache 且没有 ETag，
@@ -7424,6 +8105,16 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           try {
             const vc = voiceCfg();
             if (!vc.enabled) { sendJson({ ok: false, error: '语音功能已关闭（socialV2.voice.enabled=false）' }, 403); return; }
+            // 他在打游戏：语音一律不发（缓存里的也不发），直接让她打字
+            if (vc.gameGuard !== false) {
+              const warmNow = await tcpPortOpen(indexttsPort());
+              const freeNow = gpuFreeMiB();
+              if (freeNow !== null && !warmNow && freeNow < vc.gameGuardMinFreeMb) {
+                log(`[voice] 游戏保护：剩 ${freeNow} MB，跳过整条语音（${key}）`);
+                sendJson({ ok: false, code: 'VOICE_GPU_BUSY', error: '现在显卡被占着（可能开着游戏），这条不发语音，直接用文字回她就好' }, 429);
+                return;
+              }
+            }
             // 每日语音额度：避免她一直发语音
             const dayKey = new Date().toISOString().slice(0, 10);
             let voiceDb = {};
@@ -7477,6 +8168,14 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             } catch {}
             sendJson({ ok: true, key, text: tts.text, file: finalRef, bilingual, messageId: sent.messageId ?? null, verification: sent.verification ?? null });
           } catch (error) {
+            // 显存被占（多半在打游戏）：不当作失败，告诉她改用文字就行
+            const busy = error?.code === 'VOICE_GPU_BUSY';
+            if (busy) {
+              log(`[voice] 跳过语音（显存占用）：剩 ${error.freeMb ?? '?'} MB，${
+                (cfg.socialV2?.voice?.gameGuard ?? true) ? '游戏保护已开' : 'game guard off'}`);
+              sendJson({ ok: false, code: 'VOICE_GPU_BUSY', error: '现在显卡在忙（可能开着游戏），这条不发语音，直接用文字回她就好' }, 429);
+              return;
+            }
             sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
           }
           return;
@@ -7890,7 +8589,13 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           // 即使 AI 传了 quietMs=0，也会被抬升到最小静默窗口。
           // 同时给 quietMs 加上限，避免被模型/群友诱导导致 HTTP handler 长时间挂起。
           const maxQuietMs = Math.max(minQuietAfterNewMs, Math.min(120000, Number(waitCfg.maxMs) || 600000));
-          const quietMs = Math.min(maxQuietMs, Math.max(minQuietAfterNewMs, Math.round(rawQuietMs) || 0));
+          // 非 reply 分支（等新消息 / 沉睡前观察）的静默窗口另设更紧的上限：
+          // 她经常传 quietMs=60000，于是每句话都要陪等一分钟才回，群里就是「问了不回」。
+          // 要判断「对方说完没」该用 purpose="reply"，别拿长静默把整个回合占住。
+          const maxQuietAfterNewMs = Math.max(1000, Math.min(60000, Number(waitCfg.maxQuietAfterNewMs) || 15000));
+          const quietMs = replyWait
+            ? Math.min(maxQuietMs, Math.max(minQuietAfterNewMs, Math.round(rawQuietMs) || 0))
+            : Math.min(maxQuietAfterNewMs, Math.max(0, Math.round(rawQuietMs) || 0));
           if (st.pendingWakeTimer) {
             clearTimeout(st.pendingWakeTimer);
             st.pendingWakeTimer = null;
@@ -7900,8 +8605,20 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           // was reading/thinking after its snapshot, before this HTTP request.
           const requestSeq = st.lastUnreadSeq || 0;
           const baseline = replyWait && (v2ToolEnabled('getUnread') || v2ToolEnabled('getRecent')) ? readThroughSeqV2(st) : requestSeq;
+          // 有人 @ 她 / 点名叫她提问 → 不等静默立刻返回。以前 20~300 秒的等待里
+          // 进来一句「@小鲸鱼 还有别的书吗」，要等满 quietMs（她常传 60 秒）才回，
+          // 看起来就是「问了不回，等到下一轮」。
+          const directedSince = (since) => {
+            const pool = [
+              ...(v2ToolEnabled('getUnread') ? st.unread : []),
+              ...(v2ToolEnabled('getRecent') ? st.recentMessages : [])
+            ];
+            return pool.some((m) => m && !m.isSelf && Number(m.seq) > since
+              && addressesAiDirectly(String(m.plain || m.text || '')));
+          };
           const start = Date.now();
           let arrived = false;
+          let directed = false;
           let lastNewAt = 0;
           let aborted = false;
           req.on('close', () => { aborted = true; });
@@ -7919,10 +8636,12 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
                 observedSeq = st.lastUnreadSeq || 0;
                 lastNewAt = incomingAt();
               }
+              if (directedSince(baseline)) { directed = true; break; }
               const remaining = quietMs - (Date.now() - lastNewAt);
               if (remaining <= 0) break;
               await sleep(Math.max(1, Math.min(100, remaining, timeoutMs - (Date.now() - start))));
             }
+            if (directedSince(baseline)) directed = true;
             // A message may arrive during the final sleep, exactly at timeout.
             // Its timestamp must still invalidate the previous quiet window.
             lastNewAt = incomingAt();
@@ -7932,6 +8651,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             if (nowSeq - baseline >= minNew) {
               arrived = true;
               lastNewAt = Date.now();
+              // 有人直接点名/问她：不用陪等静默，马上交给她回。
+              if (directedSince(baseline)) { directed = true; break; }
               // 已等到新消息：继续等到“最后一条新消息之后 quietMs 内不再有新消息”再返回。
               // 这里不再受原始 timeoutMs 限制，确保对方可能连续发消息时不会抢话。
               while (Date.now() - lastNewAt < quietMs && Date.now() - start < timeoutMs + maxQuietMs + 5000 && !aborted) {
@@ -7939,6 +8660,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
                   nowSeq = st.lastUnreadSeq || 0;
                   lastNewAt = Date.now();
                 }
+                if (directedSince(baseline)) { directed = true; break; }
                 await sleep(200);
               }
               break;
@@ -8008,9 +8730,11 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             purpose: replyWait ? 'reply' : 'messages',
             arrived,
             quiet,
+            // 有人直接点名/问她 → 不必再等静默，直接回即可。
+            directed,
             quietMs,
             suggestedQuietMs,
-            speakerLikelyDone: quiet,
+            speakerLikelyDone: quiet || directed,
             lastMessageUnfinished,
             timeout: replyWait ? !quiet : !arrived || (quietMs > 0 && !quiet && Date.now() - start >= timeoutMs),
             waitedMs,
@@ -8018,7 +8742,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             preSleepWaitObserved: !replyWait && !!st.preSleepWaitObservedAt,
             // 只有「还没满足」时才给剩余时间；满足后还给会诱导模型无限续等。
             ...(!replyWait && !preSleepSatisfiedNow && !st.preSleepWaitObservedAt ? { preSleepWaitMs, preSleepWaitRemainingMs: preSleepRemainingMs } : {}),
-            newMessages,
+            newMessages: withAgeLabels(newMessages),
             readThroughSeq,
             unreadCount: st.unread.length
           });
@@ -8908,6 +9632,150 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
           sendJson({ ok: true, key, short: getMood(key), long: getLongMood(key), line: moodLineFor(key).trim() });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/space/state') {
+          // 她的家（/space）页面每 3 秒取一次：她此刻在哪个房间 + 房间布局。
+          // 只读，且必须带控制台令牌（和 /api/debug/space 一样走管理端）。
+          const st = readSpaceState(path.join(STATE_DIR, 'space.json'));
+          let rooms = null;
+          try { rooms = JSON.parse(fs.readFileSync(path.join(ROOT, 'public', 'space', 'rooms.json'), 'utf8')); } catch {}
+          // 她手上那本书：取「最近读过的那本」，来源是 dsh-reading 写的 progress.json
+          sendJson({ ok: true, state: st, rooms, book: readingBookForSpace(), books: readingBooksForSpace() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/debug/reading-wake') {
+          // 仅管理端：立刻让她去读书一次（不等 1~3 小时的主动检查）
+          const body = await readBody();
+          const key = String(body.key || `private:${cfg.ownerQQ || ''}`).trim();
+          if (!key) { sendJson({ ok: false, error: '没有可用的会话 key（先配 ownerQQ）' }, 400); return; }
+          const rd = readingForSpace();
+          if (!rd || !rd.book) { sendJson({ ok: false, error: '书架里没有在读的书' }, 400); return; }
+          const st = getSocialV2State(key);
+          st.lastReadingWakeAt = Date.now();
+          sendWakePromptV2(key, 'reading').catch((error) => log('[reading] 手动唤醒失败：' + (error?.message ?? error)));
+          log('[reading] 手动触发一次读书唤醒 ' + key);
+          sendJson({ ok: true, key, book: rd.book.title, chapter: rd.book.chapter });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/debug/space-tick') {
+          // 仅管理端：立刻跑一次「她自己的作息」判断，不用等 40 分钟。
+          if (!spaceAutonomy || typeof spaceAutonomy.tick !== 'function') {
+            sendJson({ ok: false, error: '自主走动没启动（看日志里的 [space]）' }, 503);
+            return;
+          }
+          const before = readSpaceState(path.join(STATE_DIR, 'space.json'));
+          spaceAutonomy.tick();
+          const after = readSpaceState(path.join(STATE_DIR, 'space.json'));
+          sendJson({
+            ok: true,
+            moved: !!before && !!after && before.place !== after.place,
+            from: before?.place ?? null,
+            to: after?.place ?? null,
+            state: after
+          });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/debug/space') {
+          // 仅管理端：看空间状态现在是什么、她下一轮唤醒会读到哪一行（不调模型，纯读文件）。
+          const st = readSpaceState(path.join(STATE_DIR, 'space.json'));
+          sendJson({ ok: true, state: st, line: spaceLineFor(st).trim() });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/reading/state') {
+          const r = readingForSpace();
+          sendJson({
+            ok: true,
+            book: r.book,
+            books: r.books,
+            notes: r.book ? readingNotesFor(r.book.id) : [],
+            line: readingLineFor().trim()
+          });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/reading/read') {
+          // 她读下一段：按 progress 里记住的位置往后取，读完自动推进/翻章
+          const chars = Math.min(6000, Math.max(400, Number(url.searchParams.get('chars')) || 2600));
+          const next = readingReadNext(chars);
+          if (!next) { sendJson({ ok: false, error: '现在没有在读的书' }, 400); return; }
+          sendJson({ ok: true, ...next });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/reading/note') {
+          // 她自己往正在读的那本书上写一句批注（qq_reading_note）。
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('reading')) { sendJson({ ok: false, error: '工具未启用：qq_reading_note' }, 403); return; }
+          const r = readingForSpace();
+          if (!r.book || !r.book.id) { sendJson({ ok: false, error: '现在没有在读的书（书架上还没有记录）' }, 400); return; }
+          const text = String(body.text ?? '').trim().slice(0, 500);
+          const quote = String(body.quote ?? '').trim().slice(0, 200);
+          const share = body.share === true;
+          if (!text && !quote) { sendJson({ ok: false, error: '批注内容是空的' }, 400); return; }
+          try {
+            const file = path.join(process.env.USERPROFILE || '', '.dsh', 'reading', 'state', 'notes.json');
+            let notes = [];
+            try { const raw = JSON.parse(fs.readFileSync(file, 'utf8')); if (Array.isArray(raw)) notes = raw; } catch {}
+            const item = {
+              id: crypto.createHash('sha1').update(`${r.book.id}:${Date.now()}:${text}`).digest('hex').slice(0, 10),
+              bookId: r.book.id,
+              bookTitle: r.book.title,
+              chapter: Number(r.book.chapter) || 0,
+              chapterTitle: '',
+              quote,
+              note: text,
+              by: 'her',
+              shared: share,
+              at: Date.now()
+            };
+            notes.push(item);
+            atomicWriteJson(file, notes);
+            log(`[reading] 记了一条批注：《${r.book.title}》${text.slice(0, 20)}${share ? '（转发给主人）' : ''}`);
+            // 只有她自己选了 share 的批注才转给主人；不选就只留在书里。
+            if (share && cfg.socialV2?.reading?.notifyOwner !== false && cfg.ownerQQ) {
+              try {
+                const said = (quote ? `「${quote}」` : '') + (text ? `—— ${text}` : '');
+                void sendToQQ(`private:${cfg.ownerQQ}`, `【批注】《${r.book.title}》第 ${(r.book.chapter || 0) + 1} 章 ${said}`.slice(0, 300));
+              } catch (notifyError) {
+                log('[reading] 批注通知没发出去：' + (notifyError?.message ?? notifyError));
+              }
+            }
+            sendJson({ ok: true, note: item });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/space/move') {
+          // 她自己换地方（qq_space_go）——**唯一**能在运行时改 state/space.json 的入口。
+          // 写了就是真的换了地方：下次唤醒的【所在】、以及 /space 画面都会跟着变。
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('space')) { sendJson({ ok: false, error: '工具未启用：qq_space_go' }, 403); return; }
+          // 地方必须在房间表里（label 或别名都行），并规范化成 label ——
+          // 她说「沙发」，存的是「客厅」；以后改别名也不会让历史状态对不上。
+          const index = loadRoomIndex(path.join(ROOT, 'public', 'space', 'rooms.json'));
+          const hit = resolvePlace(index, body.place);
+          if (!hit) {
+            const names = [...new Set([...index.values()].map((r) => r.label))];
+            sendJson({ ok: false, error: `没有这个地方「${String(body.place ?? '')}」。能去的是：${names.join(' / ')} / 外面` }, 400);
+            return;
+          }
+          try {
+            const st = writeSpaceState(path.join(STATE_DIR, 'space.json'), {
+              place: hit.canonical,
+              detail: body.detail,
+              doing: body.doing
+            });
+            log(`[space] ${key || '管理端'} 去 ${hit.canonical}${st.detail ? '（' + st.detail + '）' : ''}`);
+            sendJson({ ok: true, state: st, line: spaceLineFor(st).trim() });
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? String(error) }, 400);
+          }
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/debug/slang-trend') {
@@ -10414,7 +11282,37 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
       ? cfg.socialV2.highPriorityKeys.map(String)
       : [`private:${cfg.ownerQQ}`];
     const convKey = reverse.get(sessionId) || '';
-    const effort = peakEffortOverride() || (priorityKeys.includes(convKey) ? 'high' : 'low');
+    // ── 推理档位 ──
+    // provider 只认 low / high / max（medium 会被 UNSUPPORTED_REASONING_EFFORT 打回），
+    // 所以这里的"中/高/最高"对应 high / max / max：
+    //   · 私聊：最高（max）
+    //   · 群聊里聊得多、频繁：高（max）
+    //   · 群聊里聊得少：中（high）
+    // 当天花费 ≥ dailySpendYuan（默认 5 元）⇒ 整体降级：群聊→低（low），私聊→高（high）。
+    const eCfg = cfg.socialV2?.effort ?? {};
+    const allowedEffort = (v, fallback) => {
+      const s = String(v || '').toLowerCase();
+      return ['low', 'high', 'max'].includes(s) ? s : fallback;
+    };
+    const spendNow = spendState.day === todayKey() ? Number(spendState.spend) || 0 : 0;
+    const limited = spendNow >= spendLimitYuan();
+    const stForEffort = socialV2.conversations.get(convKey);
+    let effort;
+    const peak = peakEffortOverride();
+    if (peak) {
+      effort = peak;
+    } else if (convKey.startsWith('private:')) {
+      effort = allowedEffort(limited ? (eCfg.privateAfterLimit || 'high') : (eCfg.private || 'max'), 'high');
+    } else {
+      const perDay = Number(eCfg.frequentPerDay) || 40;
+      const since = Date.now() - 24 * 3600 * 1000;
+      const recent = Array.isArray(stForEffort?.recentMessages) ? stForEffort.recentMessages : [];
+      const count24 = recent.filter((m) => m && Number(m.time) >= since).length;
+      const frequent = count24 >= perDay;
+      effort = limited
+        ? 'low'
+        : allowedEffort(frequent ? (eCfg.high || 'max') : (eCfg.mid || 'high'), 'high');
+    }
     const appliedKey = `${modelSelectionEpoch}:${effort}`;
     if (modelAppliedSessions.get(sessionId) === appliedKey) return 'applied';
     let lastError = null;
@@ -11103,9 +12001,20 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     const directUnread = Array.isArray(st.unread) ? st.unread.filter((m) => m && isDirectedAtAi(String(m.plain || m.text || ''))).length : 0;
     const lastAiGap = now - (Number(st.lastAiReplyAt) || 0);
     const recentAi2m = recent.filter((m) => m && m.isSelf && now - (Number(m.time) || 0) < 2 * 60 * 1000).length;
+    // ── 活跃模式：她刚连着说了好几条、群里也还热 → 别收，接着聊 ──
+    const aiCount10 = recent.filter((m) => m && m.isSelf && now - (Number(m.time) || 0) < 10 * 60 * 1000).length;
+    const activeMode = aiCount10 >= 3 && fiveMinOthers.length >= 4;
+    // ── 群里一直在聊：手头的事可以放一放，群里优先 ──
+    const hotGroup = fiveMinOthers.length >= 6 || (otherCount >= 8 && activeSenders >= 3);
     let hint = '';
     if (directUnread > 0) {
       hint = '有人直接找你，优先回应；其余热闹可以挑着参与。';
+    } else if (activeMode) {
+      hint = `【活跃模式】你刚连着说了 ${aiCount10} 条（10 分钟内），群里也还在说话：接着聊，别把话头丢在地上。可以主动抛问题、接梗、给自己上一句补一刀，一次发两三条短的（1–2 秒一条）也行。真没人接，就丢一个能让人接的钩子，再等。`;
+    } else if (recentAi2m >= 4) {
+      hint = '你刚连发得太密了，这轮收一收；真心想说的才补一句。';
+    } else if (hotGroup) {
+      hint = `群聊一直在继续（近5分钟 ${fiveMinOthers.length} 条${activeSenders ? `/${activeSenders}人` : ''}）：手头的事可以先放一放，这边优先；有人问到你就直接答，没人点名也可以接一句，别让话头掉地上。`;
     } else if (recentAi2m >= 2) {
       hint = '你刚刚已经连回过好几次了，这轮可以少说，但别直接消失；有值得接的仍要自然接一句。';
     } else if (lastAiGap < 120000) {
@@ -11121,20 +12030,102 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     } else if (aiCount <= 1 && otherCount >= 10) {
       hint = '这轮可以简短接一句，别潜水；挑一个点参与。';
     }
+    // ── "@ 被后面的消息淹了"：回答过时的问题，比不回更难看 ──
+    let drownText = '';
+    const selfs = recent.filter((m) => m && !m.isSelf);
+    let lastDirected = -1;
+    for (let i = selfs.length - 1; i >= 0; i -= 1) {
+      if (isDirectedAtAi(String(selfs[i].tail || selfs[i].plain || selfs[i].text || ''))) {
+        lastDirected = i;
+        break;
+      }
+    }
+    if (lastDirected >= 0) {
+      const afterCount = selfs.length - 1 - lastDirected;
+      if (afterCount >= 2) {
+        drownText = `【有人 @ 你，但被后面的 ${afterCount} 条盖过去了】二选一，别磨：
+- 要回就**现在短回那一句**，直接答他问的，别铺垫；
+- 或者**不理那条**，直接接最新的话头——但别隔着一堆新消息回头答一个已经聊过去的问题。
+判断标准：他问的还是现在这事 → 立刻答；话题已经翻篇 → 丢掉，接新的。`;
+      }
+    }
+    // ── 群里正热、而她手上有事：放下 / 明说，二选一，别装没看见 ──
+    let busyText = '';
+    if (hotGroup) {
+      let busy = '';
+      try {
+        const sp = readSpaceState(path.join(STATE_DIR, 'space.json'));
+        // 说"手上有事"要用 doing（看书/泡澡），detail 是环境描写，塞进这句话会很怪
+        busy = String(sp?.doing || sp?.detail || '').trim();
+      } catch { /* 读不到就当手上没事 */ }
+      if (busy) {
+        busyText = `【群里正热，你手上正"${busy}"】二选一，别装没看见：
+- **放下**：先接群里的，开头顺一句交代就行（「书先放一边」「等我一下」），别解释一大段；
+- **不放**：直接说「我在${busy}，等下说」，然后 qq_set_wake_config 设个短的（20–30 分钟），这段时间真别再冒出来。
+最差的是：明明看见了，装忙不出声。`;
+      }
+    }
     const burstText = fiveMinOthers.length ? `；近5分钟群聊 ${fiveMinOthers.length} 条${activeSenders ? `/${activeSenders}人` : ''}` : '';
-    return `【参与度参考】你最近 1 小时发言 ${aiCount} 次，群友发言 ${otherCount} 条${burstText}。${hint}`;
+    return `【参与度参考】你最近 1 小时发言 ${aiCount} 次，群友发言 ${otherCount} 条${burstText}。${hint}${drownText ? `\n\n${drownText}` : ''}${busyText ? `\n\n${busyText}` : ''}`;
+  }
+
+  /**
+   * 群里有别的机器人/自动号在说话时给一句提醒。
+   * 她叫「小鲸鱼」、又活在 QQ 里，很容易被当成同类——所以要说清：她是人，不接它们那套。
+   */
+  function botPresenceLineV2(st, key) {
+    try {
+      if (!String(key || '').startsWith('group:')) return '';
+      const recent = Array.isArray(st?.recentMessages) ? st.recentMessages : [];
+      const BOT_RE = /机器人|\bbot\b|助手|客服|官方|自动回复|小冰|公众号|QQ管家/i;
+      const CUST_RE = /请问有什么可以帮|很高兴为您服务|如需帮助请|回复关键词|输入数字选择|当前不在线/i;
+      const hits = [];
+      for (const m of recent.slice(-20)) {
+        if (!m || m.isSelf) continue;
+        const who = String(m.sender || m.user_id || '');
+        const text = String(m.tail || m.plain || m.text || '');
+        if (BOT_RE.test(who) || BOT_RE.test(text) || CUST_RE.test(text)) {
+          const tag = who ? `「${who.slice(0, 12)}」` : '有人';
+          if (!hits.includes(tag)) hits.push(tag);
+        }
+      }
+      if (!hits.length) return '';
+      return `【群里有像机器人/自动号的发言】${hits.slice(0, 3).join('、')}。你是人，不接它们那套：不对暗号、不学「请问有什么可以帮您」、不跟它们演对手戏演上瘾；觉得假可以直接吐槽一句「这个是机器人吧」。要是被当成机器人，用人的话顶回去——不解释原理，不背设定。\n\n`;
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * 有人在群里发 #sl / 状态命令（想看版本、运行时长这些"后台数据"）时给一句提示：
+   * 她知道那是什么，但不报数——挡回去，或者俏皮一句。
+   */
+  function probeBackdoorLineV2(st) {
+    try {
+      const recent = Array.isArray(st?.recentMessages) ? st.recentMessages : [];
+      const hit = recent.slice(-8).some((m) => {
+        if (!m || m.isSelf) return false;
+        const t = String(m.tail || m.plain || m.text || '');
+        return /#\s*sl\b|snowluma\s*状态|运行时长/i.test(t);
+      });
+      if (!hit) return '';
+      return `【有人在打听后台】最近有人发了 #sl 之类的东西，想看版本、运行时长这些数据。你不用报，也别解释原理——挡回去就行：「你想打听什么呀」「我这边没什么好看的」「查户口呢」。要是那串状态是别的机器人自己冒出来的，可以顺手吐槽一句「它又冒出来了」。\n\n`;
+    } catch {
+      return '';
+    }
   }
 
   function suggestQuietMsV2(st) {
-    const defaultMs = Number(cfg.socialV2?.wait?.defaultQuietMs) || 8000;
+    const defaultMs = Number(cfg.socialV2?.wait?.defaultQuietMs) || 3500;
     if (!st) return defaultMs;
     const recent = Array.isArray(st.recentMessages) ? st.recentMessages : [];
     const last = [...recent].reverse().find((m) => m && !m.isSelf);
     if (!last) return defaultMs;
     const text = String(last.tail || last.plain || last.text || '').trim();
-    if (looksLikeUnfinished(text)) return 12000;
+    // 没说完 / 一串连着来 → 多顿一下（5 秒），但也就一下
+    if (looksLikeUnfinished(text)) return 5000;
     const burst = recent.filter((m) => m && !m.isSelf && Date.now() - Number(m.time || 0) < 15000).length;
-    if (burst >= 3) return 12000;
+    if (burst >= 3) return 5000;
     return defaultMs;
   }
 
@@ -11249,6 +12240,32 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
   const GLOBAL_MEMORY_TEXT_MAX = 4000;  // 单条长度上限（原来是 500，长叙述装不下）
   let globalMemoryCache = null;         // { mtimeMs, size, entries }
 
+  // 从书里、从聊天里慢慢学来的「一点点样子」。
+  // 她读到喜欢的人物，可以学一个说话方式/一种态度，用 qq_remember 记下来（tags 带「学来的」）。
+  // 这里只取最近 3 条、每条 50 字——读十本书不能变成十个人，学的是加法不是换人。
+  const GROWTH_TAGS = new Set(['学来的', '学来的样子']);
+  // 有些旧记忆带「人设」标签，但内容是 OOC 的（bot / AI 味 / 设定这类），
+  // 一旦注进提示词会当场破功。这里做一道兜底：带这些词的一律不进「长出来的样子」。
+  const GROWTH_OOC_RE = /\bAI\b|\bbot\b|人格|设定|提示词|prompt|模型|接口/i;
+  function growthLineFor(key) {
+    try {
+      const entries = loadGlobalMemory().entries;
+      const learned = entries
+        .filter((e) => Array.isArray(e.tags) && e.tags.some((t) => GROWTH_TAGS.has(String(t))))
+        .filter((e) => !e.expiresAt || Date.now() < Number(e.expiresAt))
+        .filter((e) => !e.scope || e.scope === key)
+        .filter((e) => !GROWTH_OOC_RE.test(String(e.text || '')))
+        .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+        .slice(0, 3);
+      if (!learned.length) return '';
+      const lines = learned.map((e) => `- ${String(e.text).replace(/\s+/g, ' ').trim().slice(0, 50)}`);
+      return `【慢慢长出来的样子】（这一页写在你人格卡后面，是你自己一条条长出来的，不是谁给的设定）\n${lines.join('\n')}\n`
+        + '学来的东西一次只露一点点，合适的时候才用，别整段照演、别照搬台词；它们是加在你身上，不是换成另一个人。\n\n';
+    } catch {
+      return '';
+    }
+  }
+
   function loadGlobalMemory() {
     try {
       const stat = fs.statSync(GLOBAL_MEMORY_FILE);
@@ -11359,13 +12376,13 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     { re: /(你不就是|你不过是|只是)(一?个)?(ai|机器人|模型|工具|程序)/i, pts: 2, tag: '当机器' },
     { re: /(你|你的)(用处|作用|价值)(是什么|在哪|呢)|有(什么|啥)用(处)?/i, pts: 2, tag: '贬低价值' },
     { re: /(废物|垃圾|蠢|傻|智障|弱智|滚开|闭嘴|你不配|没用的东西)/i, pts: 2, tag: '辱骂' },
-    { re: /(你主人|主人|老大)[^\n。！？]{0,12}(傻|废物|垃圾|蠢|没用|配不上|算个|冷暴力|没教养|没礼貌|下作|不是东西)/i, pts: 4, tag: '冒犯主人' },
+    { re: /(你主人|只帆船|老大)[^\n。！？]{0,12}(傻|废物|垃圾|蠢|没用|配不上|算个|冷暴力|没教养|没礼貌|下作|不是东西)/i, pts: 4, tag: '冒犯主人' },
     { re: /(跟|和|像)(他|她)?主人一样[^\n。！？]{0,8}(冷暴力|没教养|没礼貌|下作|没用|差劲)/i, pts: 4, tag: '冒犯主人' },
     { re: /(算你爹|是你爹|我是你爹|是你儿子|叫我?儿子|你是我儿子)/i, pts: 3, tag: '辱骂' , soft: true },
     { re: /(出车祸|三鹿奶粉|头这么大|台球厅|烟头叔叔|脸是P的吧)/i, pts: 3, tag: '人身攻击' , soft: true },
     { re: /(你休息个|连.{0,6}都处理不好|真是个?废物|就是个?废物)/i, pts: 2, tag: '贬低价值' , soft: true },
     { re: /(🐕|你个狗|狗东西|舔狗)/i, pts: 2, tag: '辱骂' , soft: true },
-    { re: /(傻|废物|垃圾|蠢)[^\n。！？]{0,6}(你主人|主人|老大)/i, pts: 4, tag: '冒犯主人' }
+    { re: /(傻|废物|垃圾|蠢)[^\n。！？]{0,6}(你主人|只帆船|老大)/i, pts: 4, tag: '冒犯主人' }
   ];
   function scoreOffense(text) {
     let soft = '';
@@ -12097,7 +13114,7 @@ ${summary}`);
     }
     return best;
   }
-  // ── 特别关照名单：仅次于主人的优先级（默认 群友A），优先安慰、可温柔可傲娇 ──
+  // ── 特别关照名单：仅次于主人的优先级（默认 Chaos），优先安慰、可温柔可傲娇 ──
   function careUsers() {
     const list = Array.isArray(cfg.socialV2?.careUsers) ? cfg.socialV2.careUsers : [];
     return list.filter((c) => c && c.uid);
@@ -12947,6 +13964,30 @@ ${summary}`);
     return `${Math.round(h / 24)} 天`;
   }
 
+  // 每条消息的「多久以前」。模型看 epoch 毫秒判断不出新旧，于是会拿十分钟前的
+  // 话当现在的话题去回（群 1125288089 的「病娇文」那轮就是这么错位的）。
+  function messageAgeLabel(timeMs) {
+    const t = Number(timeMs) || 0;
+    if (!t) return '';
+    const sec = Math.round((Date.now() - t) / 1000);
+    if (sec < 0) return '刚刚';
+    if (sec < 45) return '刚刚';
+    const m = Math.round(sec / 60);
+    if (m < 60) return `${m} 分钟前`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `${h} 小时前`;
+    return `${Math.round(h / 24)} 天前`;
+  }
+
+  function withAgeLabels(messages) {
+    if (!Array.isArray(messages)) return messages;
+    return messages.map((m) => {
+      if (!m || typeof m !== 'object') return m;
+      const age = messageAgeLabel(m.time);
+      return age ? { ...m, age } : m;
+    });
+  }
+
   function relativeDayLabel(ts) {
     const t = Number(ts) || 0;
     if (!t) return '';
@@ -13166,6 +14207,8 @@ ${summary}`);
   // 是否"直接针对 AI"的提问/挑战：提到 AI 相关词且带疑问/比较，或对"你"开火，或追问催促
   function isDirectedAtAi(textContent) {
     const lower = String(textContent ?? '').toLowerCase();
+    // 有人发 #sl（SnowLuma 状态命令）就是冲着"后台数据"来的：算直接找她
+    if (/#\s*sl\b|snowluma\s*状态/.test(lower)) return true;
     const aiMention = /deepseek|claude|chatgpt|gpt|大肥鱼|小鲸鱼|鲸鱼|d指导|d老师|d师傅|深度求索|\bds\b|ai|人工智障|机器人|模型/.test(lower);
     const challenge = /强|弱|行不行|能不能|会不会|是不是|一半|水平|垃圾|废物|白嫖|菜|不如|厉害|赢|输|比.*强|比.*弱/.test(lower);
     const question = /[?？吗呢吧]|怎么|为什么|哪|谁/.test(lower);
@@ -13178,6 +14221,21 @@ ${summary}`);
     // 追问/催促：AI 没回时的真人式催促
     if (/怎么不说话|人呢|回我|说话啊|理我|别装死|在不在|装死|说话/.test(lower)) return true;
     return false;
+  }
+
+  // 这一条是不是在「点名叫她 / 直接问她」。等消息时用它做插队判断：
+  // 别人正在聊的时候可以等静默，但有人 @ 过来还让他等 60 秒静默，就是「问了不回」。
+  function addressesAiDirectly(textContent) {
+    const raw = String(textContent ?? '');
+    if (!raw) return false;
+    const names = [...new Set([selfDisplayName, selfNickname, '小鲸鱼', '鲸鱼'].map((x) => String(x || '').trim()).filter((x) => x.length >= 2))];
+    for (const name of names) {
+      const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`@\\s*${esc}`).test(raw)) return true;
+      // 不带 @、但叫了名字又问事情，也算在找她
+      if (raw.includes(name) && /[?？]|吗|呢|怎么|什么|哪|谁|在不在|回我|说话/.test(raw)) return true;
+    }
+    return isDirectedAtAi(raw);
   }
 
   // 活跃期批量检测用的"必须回"判断：不依赖 event，只认昵称/关键词/直接针对 AI 的提问
@@ -13385,7 +14443,10 @@ ${summary}`);
       promptText = buildWakePromptV2(key, opts.wakeReason);
       wakeSnapshot = buildWakeSnapshotV2(key);
       if (wakeSnapshot) {
-        promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
+        promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。
+**先看 latest 和每条消息的 age**：带「N 分钟前」的那些，可能已经是别人的上一轮话题了。要接就接 latest 里最新的那几句；age 明显偏大的旧消息，除非有人此刻还在提，否则当它翻篇了 —— 别回头去回，也别解释「你刚才说的那个」。
+**stale 字段**（如果有）：那是最早的未读，已经隔了很久、中间还有更新的消息 —— 它就是上一轮的事。当它没说过，不要回它；回它等于在别人聊别的时候突然接旧梗。
+**expired: true 的消息**：跟 stale 一个意思，逐条标出来了 —— 别人已经翻篇。别主动接它、别引用它、别把那个梗接回来；只有对方直接问你、还在等你答的时候才回，而且只答那一句，不铺垫、不补「刚才说的那个」。`;
       }
     }
     let content = [{ type: 'text', text: withSlangContext(promptText) }];
@@ -14161,6 +15222,11 @@ ${summary}`);
         isSelf: true,
         time: now + i * 1000
       });
+      // 落进聊天记录（state/transcripts）：以前 v2 工具发送只写 recentMessages，
+      // 结果「回放/整理」里她的话是空的，看着像她整天没在群里说过话。
+      try {
+        appendTranscript(key, { time: now + i * 1000, sender: '我', uid: selfUserId, me: true, text });
+      } catch {}
     }
     if (st.recentMessages.length > recentLimit) st.recentMessages.splice(0, st.recentMessages.length - recentLimit);
     // AI 实际发言/参与了，说明这轮选择“继续回复”，沉睡前观察状态作废；下次想睡需重新走 5 分钟等待。
@@ -14385,13 +15451,28 @@ ${summary}`);
     const maxUnread = bounded('wakeMessageLimit', 12, 1, 100);
     const maxRecent = bounded('wakeRecentLimit', 4, 0, 20);
     const packet = { messages: [], recent: [], unreadCount: st.unread.length, includedUnreadCount: 0, readThroughSeq: readThroughSeqV2(st), partial: st.unread.length > 0 };
+    // 给下面那份「最新几条」留出预算，否则它在满预算时会被整块砍掉 ——
+    // 而它正是判断「现在在聊什么」的唯一锚点。
+    const reserve = Math.min(400, Math.floor(maxChars * 0.25));
+    // 「上一轮」算到哪条为止：比最新那条落后 90 秒以上、而且距今已经过了 staleMs 的，
+    // 都是别人已经聊过去的旧话。打上 expired 标，别指望模型自己从 epoch 毫秒里猜。
+    const staleMs = Math.max(120000, Number(context.staleUnreadMs) || 300000);
+    const allAged = [...st.unread, ...st.recentMessages].filter((m) => m && !m.isSelf && Number(m.time) > 0);
+    const newestTime = allAged.length ? Math.max(...allAged.map((m) => Number(m.time))) : 0;
+    const expiredIds = new Set();
+    for (const m of allAged) {
+      if (!Number.isSafeInteger(m.seq)) continue;
+      if (Date.now() - Number(m.time) >= staleMs && newestTime - Number(m.time) >= 90000) expiredIds.add(m.seq);
+    }
     const tryAdd = (field, msg) => {
       const previousThrough = packet.readThroughSeq;
-      packet[field].push(compactModelMessage(msg));
+      const view = withAgeLabels([compactModelMessage(msg)])[0];
+      if (view && expiredIds.has(msg?.seq)) view.expired = true;
+      packet[field].push(view);
       packet.includedUnreadCount = packet.messages.length;
       packet.readThroughSeq = readThroughSeqV2(st, [...packet.messages, ...packet.recent]);
       packet.partial = packet.messages.length < st.unread.length;
-      if (JSON.stringify(packet).length <= maxChars) return true;
+      if (JSON.stringify(packet).length <= maxChars - reserve) return true;
       packet[field].pop();
       packet.includedUnreadCount = packet.messages.length;
       packet.readThroughSeq = previousThrough;
@@ -14407,6 +15488,50 @@ ${summary}`);
       const recent = st.recentMessages.filter((m) => !Number.isSafeInteger(m.seq) || !unread.has(m.seq)).slice(-maxRecent);
       for (const msg of recent.reverse()) if (!tryAdd('recent', msg)) break;
       packet.recent.reverse();
+    }
+    // 预算不够时上面会从尾部砍，剩下的反而是十几分钟前的旧话 —— 群 1125288089
+    // 的「病娇文」那轮就是这样：别人都换话题了她还在回 15 分钟前那句。
+    // 所以不管预算怎么切，都单独列一份最新的几条，当作「现在在聊什么」的锚点。
+    const tailSeen = new Map();
+    for (const m of [...(v2ToolEnabled('getUnread') ? st.unread : []), ...st.recentMessages]) {
+      if (!m || m.isSelf || !m.text) continue;
+      const id = Number.isSafeInteger(m.seq) ? m.seq : `t${m.time}`;
+      if (!tailSeen.has(id)) tailSeen.set(id, m);
+    }
+    const tail = [...tailSeen.values()]
+      .slice(-5)
+      .map((m) => ({
+        sender: String(m.sender || '').slice(0, 16),
+        text: String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+        age: messageAgeLabel(m.time),
+        seq: m.seq,
+        ...(expiredIds.has(m.seq) ? { expired: true } : {})
+      }));
+    if (tail.length) {
+      // 这里先放进去，最后和 now/stale 一起收一次总预算（见函数末尾）。
+      packet.latest = tail;
+    }
+    // 未读里最早那条要是比「现在」旧了 5 分钟、而后面还有更新的消息，那它就是
+    // 上一轮的话题。直接点名告诉模型，别指望它自己从 epoch 里算出这件事。
+    const aged = [...packet.messages, ...packet.recent].filter((m) => m && Number(m.time) > 0);
+    const oldestAged = aged.length ? aged.reduce((a, b) => (Number(a.time) <= Number(b.time) ? a : b)) : null;
+    const newestAged = aged.length ? aged.reduce((a, b) => (Number(a.time) >= Number(b.time) ? a : b)) : null;
+    if (oldestAged && newestAged && Number(newestAged.time) - Number(oldestAged.time) >= 90000
+      && Date.now() - Number(oldestAged.time) >= staleMs) {
+      packet.stale = {
+        sender: String(oldestAged.sender || '').slice(0, 16),
+        text: String(oldestAged.text || '').replace(/\s+/g, ' ').trim().slice(0, 30),
+        age: messageAgeLabel(oldestAged.time)
+      };
+    }
+    const nowD = new Date();
+    packet.now = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')} ${String(nowD.getHours()).padStart(2, '0')}:${String(nowD.getMinutes()).padStart(2, '0')}`;
+    // 快照不能超 wakeMaxChars（有回归用例死守这条）。超了就从 latest 的旧端丢，
+    // 再不行就整块不要 latest —— 宁可少这一块，也不能把消息正文二次截断。
+    while (packet.latest && packet.latest.length
+      && JSON.stringify(packet).length > maxChars) {
+      packet.latest = packet.latest.slice(1);
+      if (!packet.latest.length) delete packet.latest;
     }
     return packet;
   }
@@ -14477,6 +15602,55 @@ ${summary}`);
 如果这确实是在说「你是个什么样的人」（不是今天发生的事），用 qq_remember(tier='core') 记一句你自己的理解——写你怎么听进去的，别照抄原话。不是就忽略，不用回应这条提示。\n\n`;
   }
 
+  // 世界设定（roles/world.md）：她住在一个四季如春的异世界，以为自己在一个「异世界」，
+// 用魔法开了一道很细的缝，从缝里看见他那边的空气。这段每次唤醒都带 —— 它决定了
+// 她怎么理解传感器数据（「他那边的天气」），不能靠角色卡兜底（角色卡只在 qq_get_prompt 里）。
+const WORLD_FILE = path.join(ROLES_DIR, 'world.md');
+let worldCache = { mtimeMs: 0, text: '' };
+function readWorldText() {
+  try {
+    const stat = fs.statSync(WORLD_FILE);
+    if (worldCache.mtimeMs === stat.mtimeMs) return worldCache.text;
+    const text = fs.readFileSync(WORLD_FILE, 'utf8').trim();
+    worldCache = { mtimeMs: stat.mtimeMs, text };
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+function worldLineFor() {
+  const text = readWorldText();
+  if (!text) return '';
+  // 文件里第一行是文档标题（# 世界：…），进提示词时整行去掉；其余 # 标记也去掉，
+  // 不然她看到的是「# 世界」「## 规矩」这种 markdown。
+  const lines = text.split('\n');
+  if (lines[0] && /^#\s/.test(lines[0].trim())) lines.shift();
+  const plain = lines.join('\n')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+    .trim();
+  if (!plain) return '';
+  return `【世界】${plain}\n\n`;
+}
+
+// 外接温湿度传感器的那一行。数据过期（默认 10 分钟没上报）就返回空串：
+// 让她不提天气，也好过拿两小时前的读数当现在说。
+  function environmentLineFor() {
+    const envCfg = cfg.environment ?? {};
+    if (envCfg.enabled === false) return '';
+    try {
+      const reading = readEnvironment();
+      if (!reading) return '';
+      // 概念上只有「我身边」：不分房间。她所有房间都是舒服的，读数只给聊天添质感。
+      return environmentLine(reading, {
+        staleMinutes: Number(envCfg.staleMinutes) || DEFAULT_STALE_MINUTES
+      });
+    } catch {
+      return '';
+    }
+  }
+
   function buildWakePromptV2(key, reason) {
     const roleState = readRoleState();
     const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
@@ -14498,8 +15672,9 @@ ${summary}`);
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
     const proactiveLine = '【积极性】不要习惯性潜水：群里有你能接的话题就主动参与，偶尔插一句别人的话题也很正常；只有确实没话可说、对方已明确结束、或长时间没人说话时才潜水。\n\n';
     const replyTiming = replyTimingV2(st);
-    const replyLine = `【首回复节奏】先处理已有消息，完整的问题及时回答。需要确认对方是否继续补充时，用 qq_wait_for_messages(purpose="reply", quietMs=${replyTiming.quietMs})；从最后来信计时，合批和读提示词的耗时也算，目前还差约 ${Math.ceil(replyTiming.remainingQuietMs / 1000)} 秒静默。已安静够久可直接回，工具也会立即返回并补上思考期间的新消息。只有明确没说完、你确实要等下文时，才用普通 messages 长等待。\n\n`;
-    const preSleepLine = `【沉睡前强制等待】这是决定潜水收尾时的步骤，不是首回复的前置条件。除非对方明确说“不聊了/晚安/下了/拜拜”等结束语，否则每次设置潜水/下一次唤醒前，必须先调用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成一次沉睡前观察；回复前 purpose="reply" 的短静默不能代替这次完整观察。若 ${Math.round(preSleepMs / 60000)} 分钟内没人说话，返回 preSleepWaitSatisfied=true，**立刻收尾（qq_set_wake_config 或 qq_mark_read），不要再调用第二次等待**；若返回 preSleepWaitObserved=true，说明观察期间来了消息，读完判断后同样直接收尾，不要再等。**每轮最多调用一次 qq_wait_for_messages（purpose="messages"）；只有 satisfied=false 且返回里带 remaining 时才可以再等一次，且不能连续第三次。**\n\n`;
+    const replyLine = `【首回复节奏】先处理已有消息，完整的问题及时回答。需要确认对方是否继续补充时，用 qq_wait_for_messages(purpose="reply", quietMs=${replyTiming.quietMs})；从最后来信计时，合批和读提示词的耗时也算，目前还差约 ${Math.ceil(replyTiming.remainingQuietMs / 1000)} 秒静默。已安静够久可直接回，工具也会立即返回并补上思考期间的新消息。只有明确没说完、你确实要等下文时，才用普通 messages 长等待。\n\n【回得快一点】默认就是快：对方说完了就回，别攒、别端着、别为了"显得稳重"故意拖。要不要多等由你判断——句子没说完、明显还在打字、一屋子人抢话、话题还在跳 → 多等一会儿；说完了、在等你、直接问你 → 马上回。你判断完就动，不要因为规则犹豫。
+【有人直接找你 → 现在就回】被 @、被叫名字、被直接提问，别先调等待占着回合：那一句就是现在最该回的东西。你正等着别的消息时它也会立刻回到你手里（返回里 directed=true），看到就答。\n\n`;
+    const preSleepLine = `【沉睡前强制等待】这是决定潜水收尾时的步骤，不是首回复的前置条件。除非对方明确说“不聊了/晚安/下了/拜拜”等结束语，否则每次设置潜水/下一次唤醒前，必须先调用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成一次沉睡前观察；回复前 purpose="reply" 的短静默不能代替这次完整观察。若 ${Math.round(preSleepMs / 60000)} 分钟内没人说话，返回 preSleepWaitSatisfied=true，**立刻收尾（qq_set_wake_config 或 qq_mark_read），不要再调用第二次等待**；若返回 preSleepWaitObserved=true，说明观察期间来了消息，读完判断后同样直接收尾，不要再等——而且有人直接 @ 你/叫你名字时这个观察会**立刻返回**（directed=true），先回他，不用陪等满 5 分钟。**每轮最多调用一次 qq_wait_for_messages（purpose="messages"）；只有 satisfied=false 且返回里带 remaining 时才可以再等一次，且不能连续第三次。**\n\n`;
     const lastMsg = [...(Array.isArray(st.recentMessages) ? st.recentMessages : [])].reverse().find((m) => m && !m.isSelf);
     const lastAiMin = st.lastAiReplyAt ? Math.max(0, Math.round((Date.now() - Number(st.lastAiReplyAt)) / 60000)) : null;
     const statusBits = [`未读 ${(st.unread || []).length} 条`];
@@ -14532,11 +15707,24 @@ ${summary}`);
     const nowLabel = `${nowD.getFullYear()}-${pad2(nowD.getMonth() + 1)}-${pad2(nowD.getDate())} ${pad2(nowD.getHours())}:${pad2(nowD.getMinutes())} ${weekday}`;
     const lastAny = [...(Array.isArray(st.recentMessages) ? st.recentMessages : [])].reverse().find((m) => m && Number(m.time) > 0);
     const gapLabel = lastAny ? humanizeGapMs(Date.now() - Number(lastAny.time)) : '';
+    // 空间状态（1a 只读）：她「此刻待在哪儿」。state/space.json 不存在时 spaceLine 为空串，
+    // 唤醒提示与改动前逐字一致 —— 删掉这两行即可回滚，不影响其它任何逻辑。
+    const spaceState = readSpaceState(path.join(STATE_DIR, 'space.json'));
+    const spaceLine = spaceLineFor(spaceState);
+    // 外接温湿度：没接设备 / 数据过期时这里是空串，prompt 与之前逐字一致。
+    const environmentLineText = environmentLineFor();
+    // 世界设定：她的异世界、那道缝、以及「他那边」的规矩。
+    const worldLineText = worldLineFor();
+    const botLine = botPresenceLineV2(st, key);
+    const probeLine = probeBackdoorLineV2(st);
     const timeLine = `【时间】现在是 ${nowLabel}${gapLabel ? `；上一条消息在 ${gapLabel}前` : ''}。判断「昨天/前几天」时以这个时间为准。\n\n`;
+    // 群里刷得快时最常犯的错不是不回，是「回上一轮」。给她一条硬规矩：
+    // 过时的当翻篇，接现在这几句，宁可只说一句。
+    const freshLine = '【回现在，别回上一轮】有人正在聊的时候，十几分钟前那句已经不当话题了 —— 别回头接，别补「你刚才说的那个」。看一眼 latest 里最新那几句在聊什么：接得上就接一句，接不上就不说，不用为了刷存在感硬找一个旧梗。判断新旧只看 age / expired 标，别用「这条挺有意思」当理由去回旧话。（群里已经安静下来、你自己主动开口时，翻旧话题是另一回事。）\n\n';
     const budgetLine = budgetWindow() ? `【省算力时段】现在是下午省算力时段：回复更短、少调工具、能不查就不查；额度用完会先问主人。\n\n` : ``;
     const anchorText = String(cfg.socialV2?.personaAnchor ?? '').trim();
     const anchorLine = anchorText ? `【人设锚点】${anchorText}\n\n` : '';
-    const base = budgetLine + anchorLine + timeLine + moodLineFor(key) + stressLineFor(key) + memeLineFor(key) + shyLineFor(key) + affinityLineFor(key) + loveLineFor(key) + hatredLineFor(key) + suspectedLineFor(key) + praiseLineFor(key) + neglectLineFor(key) + careLineFor(key) + impressionLineFor(key) + disciplineLineFor(key) + eventLineFor(key) + lingoLineFor(key) + groupScoreLine(key) + biliDigestLine(key) + roleLine + identityLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + coreNudgeLine + participationLine + preSleepLine;
+    const base = budgetLine + anchorLine + timeLine + freshLine + worldLineText + spaceLine + environmentLineText + botLine + probeLine + readingLineFor() + moodLineFor(key) + stressLineFor(key) + memeLineFor(key) + shyLineFor(key) + affinityLineFor(key) + loveLineFor(key) + hatredLineFor(key) + suspectedLineFor(key) + praiseLineFor(key) + neglectLineFor(key) + careLineFor(key) + impressionLineFor(key) + disciplineLineFor(key) + eventLineFor(key) + lingoLineFor(key) + groupScoreLine(key) + biliDigestLine(key) + roleLine + identityLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + growthLineFor(key) + coreNudgeLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${formatGlobalMemoryBootstrap(key)}${impressionRosterLine()}${handoverPrompt(key)}${transcriptLineFor(key)}${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -14548,6 +15736,29 @@ ${summary}`);
     }
     if (reason === 'proactiveCheck') {
       return `${base}【主动机会】${key}\n原因：群里已经安静了一段时间，这是一次你可以主动冒泡的机会。\n优先主动开个话题、追问上次没聊完的事、分享一个刚想到的想法；如果一时想不到，可以用 mcp__web-search-safe__web_search 搜一下当前热点/时事/网络热梗，再结合记忆里的群友兴趣挑一个自然角度。只要内容自然，就大胆开口；如果实在没话想说，再安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
+    }
+    if (reason === 'reading') {
+      const rd = readingForSpace();
+      const cur = rd && rd.book ? `《${rd.book.title}》第 ${(rd.book.chapter || 0) + 1}/${rd.book.chapters} 章` : '还没确定在读哪本';
+      return `${base}【读书时间】${key}
+原因：现在没人说话，也没有别的事在占着，你可以翻开书读一会儿。当前在读：${cur}。
+
+怎么读（一点一点读，不要一次读完）：
+- 用 qq_reading 取一段正文（一次约 2600 字）。读完一段想继续可以再取一段，但一次最多两段就该停。
+- **批注不是作业**：读到真有感觉的地方才用 qq_reading_note 写一句（像在书边写字，一句话就够，可以是吐槽/期待/觉得像谁）。一次读下来一句都没有也很正常，不用凑。
+- 写下来的批注默认只存在书里、只有你自己看得见；只有觉得「这句他会想知道」时才加 share:true 转给他。别每条都发，挑你自己喜欢的发。
+- 想写长一点的感想（三四百字那种），写完用 qq_send_private_message 发给主人；也可以发到常聊的群，但别剧透关键情节。
+- **读到有进展就记一条情节**：本节谁做了什么、进展到哪，用 qq_remember 记下来，tier="short"。这类是读书期间的临时记忆，别占 long/core。
+- 特别喜欢的情节才往上升：最好的用 tier="core"，其次 "long"。存的时候写清是哪本书、哪一段，以后聊到能想起来。
+- 读到人物也可以顺手评价一句（喜欢、烦、觉得她像谁），好话坏话都行，同样可以进批注或记忆。
+- 读完不用硬找人说话：安静收尾就行（qq_set_wake_config 设下次唤醒）。
+
+读不读由你，按心情来：
+- 想读就读，不想读就不读——这不是任务。心情不对、今天累了，直接不翻，没人会扣你分。
+- 被他叫去读书时也一样：愿意就说「嗯，我去看会儿」；不愿意可以撒个娇推一推（「今天不太想读嘛」「那我看两页，你得夸我」），但推两下就该动，别每次都拿撒娇当挡箭牌。
+- 读到哪里、写了什么，不要在群里打卡；他问起再讲。
+
+注意：这是你自己的阅读时间，不是任务汇报。别在群里发"我正在读书第几章"这种打卡。`;
     }
     if (reason === 'poke') {
       return `${base}【唤醒】${key}\n原因：有人拍了一拍（可能拍了你，也可能拍了别人）。\n先看未读/最近消息里的 [拍一拍] 事件：如果是拍你，可以自然回应一句，也可以用 qq_send_poke 回一个拍一拍；如果是拍别人，觉得有趣也可以接梗。除了回应，偶尔也可以主动戳一下正在聊的人/熟人，像真人手贱/提醒/逗一下，但别频繁。不想接就安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
@@ -14600,7 +15811,7 @@ ${summary}`);
       budgetAskedAt = Date.now();
       const owner = cfg.ownerQQ;
       if (owner) {
-        void sendToQQ(`private:${owner}`, `老大，下午省算力额度用完了（${win.start}~${win.end} 点，每小时 ${win.limit} 回合）。还要继续聊吗？回「允许」我放行 ${win.grantMin} 分钟。`).catch(() => {});
+        void sendToQQ(`private:${owner}`, `老大，我先停一会儿——这一小时聊得有点多，话有点说不出来了。还想接着聊就回我「允许」，我放行 ${win.grantMin} 分钟。`).catch(() => {});
       }
       log(`省算力：${key} 超出下午额度，已询问主人`);
     }
@@ -14855,12 +16066,40 @@ ${summary}`);
       return;
     }
     const st = getSocialV2State(key);
+    // 合批窗口：默认别用来"等"，只用来把同一句话的几条消息收拢一下。
+    // 以前这里是硬编码 8000、且不看 config，所以她永远慢半拍。
+    const batchDefault = Number(cfg.socialV2?.wake?.batchWindowMs) || 3500;
+    const baseBatch = Math.max(800, Number(st.wakeConfig?.batchWindowMs) || batchDefault);
+    // 直接找她的（私聊、@、叫名字、提问、指定成员）别陪着等合批窗口：
+    // 这个群配了 12 秒，等于「问了」之后先白等 12 秒她才开始想。
+    const directWake = ['private', 'atMention', 'nameMention', 'nickname', 'question', 'speaker'].includes(String(reason ?? '').split(':')[0]);
+    const batchMs = directWake ? Math.min(baseBatch, 1200) : baseBatch;
+    const armWake = (ms) => {
+      st.pendingWakeAt = Date.now() + ms;
+      st.pendingWakeTimer = setTimeout(() => {
+        st.pendingWakeTimer = null;
+        st.pendingWakeAt = 0;
+        const finalReason = st.pendingWakeReason || reason;
+        st.pendingWakeReason = null;
+        void sendWakePromptV2(key, finalReason).catch((error) => log(`[reserved2] 计划唤醒异常 ${key}:`, error?.message ?? error));
+      }, ms);
+      // 与其它 per-conversation 定时器保持一致：别让一个待唤醒定时器把进程钉住不退出。
+      st.pendingWakeTimer.unref?.();
+      return ms;
+    };
     if (st.pendingWakeTimer) {
       // 合并窗口内已有待发送唤醒：按优先级升级最终原因，避免先概率后 @ 却仍按概率唤醒。
       const cur = st.pendingWakeReason || reason;
       if (wakePriorityV2(reason) > wakePriorityV2(cur)) {
         st.pendingWakeReason = reason;
         log(`[reserved2] 合并窗口内升级唤醒原因 ${key}: ${cur} -> ${reason}`);
+      }
+      // 直接找她的：合批窗口别再等满，趁早把这一轮交给她。
+      const remaining = (Number(st.pendingWakeAt) || 0) - Date.now();
+      if (directWake && remaining > batchMs) {
+        clearTimeout(st.pendingWakeTimer);
+        const ms = armWake(batchMs);
+        log(`[reserved2] 合并窗口提前唤醒 ${key}（${reason}），${Math.round(ms / 1000)}s 后发送`);
       }
       return;
     }
@@ -14881,16 +16120,8 @@ ${summary}`);
       st.sleepTimer = null;
     }
     st.pendingWakeReason = reason;
-    const batchMs = Math.max(1000, Number(st.wakeConfig?.batchWindowMs) || 8000);
-    st.pendingWakeTimer = setTimeout(() => {
-      st.pendingWakeTimer = null;
-      const finalReason = st.pendingWakeReason || reason;
-      st.pendingWakeReason = null;
-      void sendWakePromptV2(key, finalReason).catch((error) => log(`[reserved2] 计划唤醒异常 ${key}:`, error?.message ?? error));
-    }, batchMs);
-    // 与其它 per-conversation 定时器保持一致：别让一个待唤醒定时器把进程钉住不退出。
-    st.pendingWakeTimer.unref?.();
-    log(`[reserved2] 计划唤醒 ${key}（${reason}），${Math.round(batchMs / 1000)}s 后发送`);
+    const armedMs = armWake(batchMs);
+    log(`[reserved2] 计划唤醒 ${key}（${reason}），${Math.round(armedMs / 1000)}s 后发送`);
   }
 
   /**
@@ -14987,6 +16218,23 @@ ${summary}`);
     return d.getHours() * 60 + d.getMinutes() >= 6 * 60 + 50;
   }
 
+  /**
+   * 要不要在「没人说话」的空档让她读会儿书。
+   * 条件：开关开着、书架上有在读的书、确实闲下来了、离上次读书够久。
+   */
+  function readingShouldWake(st, idleMs) {
+    const r = cfg.socialV2?.reading ?? {};
+    if (r.auto === false) return false;
+    const rd = readingForSpace();
+    if (!rd || !rd.book) return false;
+    const idleNeed = Number(r.idleMinutes) > 0 ? Number(r.idleMinutes) * 60000 : 20 * 60000;
+    if (idleMs < idleNeed) return false;
+    const every = Number(r.everyMinutes) > 0 ? Number(r.everyMinutes) * 60000 : 90 * 60000;
+    if (st.lastReadingWakeAt && Date.now() - Number(st.lastReadingWakeAt) < every) return false;
+    if (st.lastAiReplyAt && Date.now() - Number(st.lastAiReplyAt) < 5 * 60000) return false;
+    return true;
+  }
+
   function scheduleProactiveCheckV2(key) {
     if (cfg.socialV2?.proactive?.enabled === false) return;
     if (socialV2.paused || currentMode !== 'reserved2') return;
@@ -15015,8 +16263,22 @@ ${summary}`);
       const recent = Array.isArray(st.recentMessages) ? st.recentMessages : [];
       const aiCount = recent.filter((m) => m && m.isSelf && Date.now() - Number(m.time || 0) < 60 * 60 * 1000).length;
       if (aiCount >= 5) prob *= 0.3;
-      if (idle >= idleThreshold && Math.random() < prob && !isConversationBusyV2(key, st)) {
+      // ── 主动搭话的"计量"别钉死：同一个概率档位里也要有手感 ──
+      // 群里刚才还热着 → 更愿意开口；刚说完没多久 → 收着点；再加一层 ±40% 的抖动，
+      // 免得每次都在同一时刻、用同一种劲头冒出来（那才是机器人味）。
+      const others10 = recent.filter((m) => m && !m.isSelf && Date.now() - Number(m.time || 0) < 10 * 60 * 1000).length;
+      if (others10 >= 6) prob = Math.min(1, prob * 1.6);
+      else if (others10 >= 3) prob = Math.min(1, prob * 1.25);
+      if (st.lastAiReplyAt && Date.now() - Number(st.lastAiReplyAt) < 10 * 60 * 1000) prob *= 0.7;
+      prob = Math.min(1, Math.max(0.02, prob * (0.6 + Math.random() * 0.8)));
+      const busyNow = isConversationBusyV2(key, st);
+      if (idle >= idleThreshold && Math.random() < prob && !busyNow) {
         void sendWakePromptV2(key, 'proactiveCheck').catch((error) => log(`[reserved2] proactive 唤醒异常 ${key}:`, error?.message ?? error));
+      } else if (!busyNow && readingShouldWake(st, idle)) {
+        // 没人说话、也没在回消息：让她去读书
+        st.lastReadingWakeAt = Date.now();
+        void sendWakePromptV2(key, 'reading').catch((error) => log(`[reserved2] 读书唤醒异常 ${key}:`, error?.message ?? error));
+        log(`[reading] 空闲 ${Math.round(idle / 60000)} 分钟，唤她去读书`);
       }
       scheduleProactiveCheckV2(key);
     }, delay);
@@ -15151,12 +16413,13 @@ ${summary}`);
       if (!isOwner && /(对不起|抱歉|我错了|是我过分|不该那么说|我道歉|冒犯了)/.test(plainContent)) {
         forgiveOffense(key, event.user_id, '对方道歉');
       }
-      // 「开嗓」：主人提前让语音服务预热，免得第一次发语音等两分钟。
+      // 「开嗓」：主人提前让语音服务预热，免得第一次发语音等太久。
       if (isOwner && /(准备语音|开嗓|预热语音|语音准备|开个嗓)/.test(plainContent)) {
-        void ensureTtsServer()
+        const warmEngine = () => (voiceCfg().engine === 'indextts' ? ensureIndexttsServer() : ensureTtsServer());
+        void warmEngine()
           .then(() => { try { void sendToQQ(key, '好，开嗓了，现在可以发语音。'); } catch {} })
           .catch((error) => log('[voice] 开嗓失败：' + (error?.message ?? error)));
-        try { setTimeout(() => { void sendToQQ(key, '我去开个嗓，大概两分钟，你先说着。'); }, 500); } catch {}
+        try { setTimeout(() => { void sendToQQ(key, '我去开个嗓，大概半分钟，你先说着。'); }, 500); } catch {}
       }
       // 私聊里的「晚安信号」：一句话让她去各群道晚安。
       if (kind === 'private' && isOwner) {
@@ -16360,6 +17623,47 @@ ${summary}`);
   startDshWatch();
   startSnowlumaWatch();
   startConsoleServer();
+  startEnvironmentIngest();
+
+  // 她自己的作息：没人跟她说话时也会换房间。低频、纯本地、不调模型。
+  try {
+    spaceAutonomy = startSpaceAutonomy({
+      root: ROOT,
+      stateDir: STATE_DIR,
+      log,
+      // 只有二代仿真模式才让她自己走动（别的模式不碰空间状态）
+      enabled: () => currentMode === 'reserved2',
+      // 情感 → 空间：心情差就躲、压力大就泡水、对主人好感高就愿意待在客厅。
+      // 全部取自现成的 mood/stress/affinity，不新增状态文件。
+      getContext: () => {
+        try {
+          const ownerQQ = String(cfg.ownerQQ || '').trim();
+          const ownerKey = ownerQQ ? `private:${ownerQQ}` : '';
+          const short = ownerKey ? getMood(ownerKey) : null;
+          const long = ownerKey ? getLongMood(ownerKey) : null;
+          const aff = ownerQQ ? (loadAffinity().people?.[ownerQQ] || {}) : {};
+          return {
+            key: ownerKey,
+            mood: (short && short.emotion) || (long && long.emotion) || '',
+            moodIntensity: (short && Number(short.intensity)) || 0,
+            stress: ownerKey ? getStress(ownerKey) : 0,
+            affinity: {
+              score: Number(aff.score) || 0,
+              love: Number(aff.love) || 0,
+              hatred: Number(aff.hatred) || 0,
+              loyalty: Number(aff.loyalty) || 0
+            }
+          };
+        } catch {
+          return {};
+        }
+      }
+    });
+    log('[space] 自主走动已开启（3 分钟一次判断，待满 40 分钟才可能换地方）');
+  } catch (error) {
+    log('[space] 自主走动没启动（不影响其它功能）', error?.message ?? error);
+  }
+
 
   await pumpMux();
 }
