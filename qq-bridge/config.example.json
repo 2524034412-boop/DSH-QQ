@@ -209,7 +209,7 @@
       "syncTtlMs": 60000,
       "maxListCount": 100,
       "includeInPrompt": true,
-      "promptMaxStickers": 8,
+      "promptMaxStickers": 14,
       "collect": {
         "enabled": true,
         "maxPerMinute": 2,
