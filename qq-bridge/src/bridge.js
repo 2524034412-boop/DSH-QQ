@@ -41,6 +41,7 @@ import { personalityStyles, personalityScript } from './dashboard-personality.js
 import { replayStyles, replayScript } from './dashboard-replay.js';
 import { renderAvatarPage } from './avatar-page.js';
 import { renderSpacePage } from './space-page.js';
+import { renderStickerPage } from './sticker-page.js';
 import { buildSocialGraph, buildPersonLinks, buildSemanticEdges } from './relation-graph.js';
 import { corePersonaHint, alreadyRemembered } from './core-memory-hint.js';
 import { environmentLine, isFresh, normalizeReading, readingAgeMs, summarizeHistory, DEFAULT_STALE_MINUTES } from './environment.js';
@@ -5015,6 +5016,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
       // 内容只在本机回环可读，且不含 QQ 号，所以放进免令牌白名单。
       const publicMedia = (req.method === 'GET' && (url.pathname.startsWith('/media/') || url.pathname === '/panel' || url.pathname === '/open-panel' || url.pathname === '/ping' || url.pathname === '/diag' || url.pathname === '/open-memory'
           || url.pathname === '/open-space'
+          || url.pathname === '/open-stickers'
           || url.pathname === '/panel-exit' || url.pathname === '/panel-close' || url.pathname === '/api/boot/card'))
         || oneclickAllowed;
       if (consoleToken && !tokenMatches && !publicMedia) {
@@ -5217,6 +5219,21 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           return;
         }
 
+        // ── 她的表情包（给主人替她写备注的页）────────────────────────
+        // 和 /memory 一样要控制台令牌；页面自己用 token 读 /api/stickers、
+        // 写 /api/stickers/note —— 不新增写接口。
+        if (req.method === 'GET' && (url.pathname === '/stickers' || url.pathname === '/stickers/')) {
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store',
+            'Content-Security-Policy': PAGE_CSP + "; frame-ancestors *",
+            'X-Content-Type-Options': 'nosniff',
+            'Referrer-Policy': 'no-referrer'
+          });
+          res.end(renderStickerPage());
+          return;
+        }
+
         // ── 用独立窗口打开记忆星图（和 /open-panel 同一套做法）──────────
         if (req.method === 'GET' && url.pathname === '/open-memory') {
           try {
@@ -5306,6 +5323,37 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           } catch (error) {
             res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
             res.end('open space failed: ' + (error?.message ?? error));
+          }
+          return;
+        }
+
+        // ── 用独立窗口打开「她的表情包」（给主人写备注用）──────────────
+        if (req.method === 'GET' && url.pathname === '/open-stickers') {
+          try {
+            const t = loadOrCreateConsoleToken();
+            const target = 'http://127.0.0.1:' + (cfg.port || 3100) + '/stickers?token=' + encodeURIComponent(t);
+            const candidates = [
+              'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+              'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+              'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+            ];
+            const exe = candidates.find(function (p2) { return fs.existsSync(p2); });
+            if (exe) {
+              const profileDir = path.join(STATE_DIR, 'edge-sticker-profile');
+              fs.mkdirSync(profileDir, { recursive: true });
+              spawn(exe, ['--app=' + target, '--start-maximized', '--user-data-dir=' + profileDir], {
+                detached: true, stdio: 'ignore', windowsHide: false
+              }).unref();
+              log('[sticker] 已拉起「她的表情包」窗口');
+              res.writeHead(204, { 'cache-control': 'no-store' });
+              res.end();
+            } else {
+              res.writeHead(302, { location: target });
+              res.end();
+            }
+          } catch (error) {
+            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+            res.end('open stickers failed: ' + (error?.message ?? error));
           }
           return;
         }
