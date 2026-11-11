@@ -201,3 +201,34 @@ test('each reply-wait buffer obeys its own tool switch, never the other one', ()
   assert.deepEqual(r3.data.newMessages, []);
   assert.equal(r3.data.readThroughSeq, 5, 'a message nobody was allowed to see may not advance the watermark');
 }));
+
+// 2026-11-10 群 1125288089：她回完一句就调 qq_wait_for_messages(timeoutMs=200000,
+// quietMs=60000) 把自己挂住，20:42:59 有人 @ 她问「还有别的书吗」，要等满 60 秒静默
+// 才返回（实际 20:44:34），看起来就是「问了不回，等到下一轮」。直接找她的消息必须
+// 立刻插队返回，普通闲聊照旧等静默。
+test('a direct mention interrupts a parked wait instead of waiting out the quiet window', () => fixture(async ({ request, append }) => {
+  append('先聊点别的');
+  await request('unread');
+  const timer = setTimeout(() => append('@小鲸鱼 还有别的书吗'), 300);
+  try {
+    const started = Date.now();
+    const result = await request('wait', { purpose: 'messages', timeoutMs: 4000, quietMs: 2500 });
+    const waited = Date.now() - started;
+    assert.equal(result.data.directed, true);
+    assert.equal(result.data.arrived, true);
+    assert.equal(result.data.speakerLikelyDone, true, '被直接问到就不该再判「对方没说完」');
+    assert.ok(waited < 1500, `被 @ 的等待应立刻返回，实际 ${waited}ms`);
+    assert.ok(result.data.newMessages.some((m) => /小鲸鱼/.test(m.text)), '被 @ 的那句必须交到手里');
+  } finally { clearTimeout(timer); }
+}));
+
+test('ordinary chatter still waits out the quiet window (no false interruption)', () => fixture(async ({ request, append }) => {
+  append('先聊点别的');
+  await request('unread');
+  const timer = setTimeout(() => append('这游戏真难打'), 300);
+  try {
+    const result = await request('wait', { purpose: 'messages', timeoutMs: 4000, quietMs: 800 });
+    assert.equal(result.data.directed, false);
+    assert.ok(result.data.waitedMs >= 900, `普通闲聊不该插队，实际 ${result.data.waitedMs}ms`);
+  } finally { clearTimeout(timer); }
+}));
