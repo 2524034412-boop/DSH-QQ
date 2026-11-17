@@ -44,7 +44,7 @@ import { renderSpacePage } from './space-page.js';
 import { renderStickerPage } from './sticker-page.js';
 import { buildSocialGraph, buildPersonLinks, buildSemanticEdges } from './relation-graph.js';
 import { corePersonaHint, alreadyRemembered } from './core-memory-hint.js';
-import { environmentLine, isFresh, normalizeReading, readingAgeMs, summarizeHistory, DEFAULT_STALE_MINUTES } from './environment.js';
+import { environmentLine, isFresh, normalizeReading, notePresenceEvent, readingAgeMs, summarizeHistory, DEFAULT_STALE_MINUTES } from './environment.js';
 import { avatarStyles } from './dashboard-avatar.js';
 import { summarize as summarizeRetention } from './memory-retention.js';
 import { resolvePriceTable } from './model-prices.js';
@@ -4818,6 +4818,9 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         const parsed = normalizeReading(raw);
         if (!parsed.ok) { send({ ok: false, error: parsed.error }, 400); return; }
         const reading = { ...parsed.reading, ip: String(req.socket?.remoteAddress ?? '').replace(/^::ffff:/, '') };
+        // 人体感应事件化：只记「安静一阵后突然有人动」的那一刻（细节在 environment.js 的 notePresenceEvent）。
+        // 人坐在桌前手一直在动，原始 motionAgo 永远是 1；提示词只认 presenceEventAt，不会整天念"有人走过"。
+        try { notePresenceEvent(readEnvironment(), reading, Date.now()); } catch {}
         try {
           atomicWriteJson(ENV_FILE, reading);
           appendEnvironmentHistory(reading);
@@ -15692,7 +15695,9 @@ function worldLineFor() {
       if (!reading) return '';
       // 概念上只有「我身边」：不分房间。她所有房间都是舒服的，读数只给聊天添质感。
       return environmentLine(reading, {
-        staleMinutes: Number(envCfg.staleMinutes) || DEFAULT_STALE_MINUTES
+        staleMinutes: Number(envCfg.staleMinutes) || DEFAULT_STALE_MINUTES,
+        // 人体感应算不算进这句话；config.environment.presence = false 就关掉
+        presence: envCfg.presence !== false
       });
     } catch {
       return '';

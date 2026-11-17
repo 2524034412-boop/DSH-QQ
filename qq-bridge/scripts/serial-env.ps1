@@ -109,7 +109,7 @@ while ($true) {
   try {
     $sp = New-Object System.IO.Ports.SerialPort $target, $Baud, 'None', 8, 'One'
     $sp.NewLine = "`n"
-    $sp.ReadTimeout = 10000
+    $sp.ReadTimeout = 45000
     $sp.ReadBufferSize = 4096
     # 不要一打开就拉 DTR/RTS：那会把板子复位一次，读数要重来
     $sp.DtrEnable = $false
@@ -117,7 +117,14 @@ while ($true) {
     $sp.Open()
     Write-Log "已连接 $target"
     while ($true) {
-      $line = $sp.ReadLine().Trim()
+      try {
+        $line = $sp.ReadLine().Trim()
+      } catch [System.TimeoutException] {
+        # 固件每 30 秒才吐一行，读超时只表示"暂时没数据"，不是断线。
+        # 以前这里当成错误处理：每 30 秒断一次再重连（日志刷屏），
+        # 而且每次重开串口都会碰一次 DTR —— 拔插/复位就是这么来的。
+        continue
+      }
       if ($line.StartsWith('{')) { Send-Reading $line }
     }
   } catch {
