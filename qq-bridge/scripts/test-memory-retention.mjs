@@ -49,6 +49,42 @@ test('daysUntil 与 retention 互相印证', () => {
   assert.equal(daysUntil(stabilityDays(mk({ tier: 'core' })), NOW, NOW, 0.5), Infinity);
 });
 
+test('短期用拉伸指数：块头不掉、临到期才散（2026-11-11 调慢）', () => {
+  const e = mk({ tier: 'short', expiresAt: NOW + 3 * DAY_MS });
+  const s = annotate([e])[0].s;
+  const r = (d) => retention(s, NOW, NOW + d * DAY_MS, e.expiresAt, 1.8);
+  // 纯指数在 0.5 天时只剩 41%，拉伸指数应该明显更高
+  assert.ok(r(0.5) > 0.75, `半天后应仍记得住，实际 ${r(0.5).toFixed(3)}`);
+  assert.ok(r(1) > 0.6, `一天后应在六成以上，实际 ${r(1).toFixed(3)}`);
+  assert.ok(r(1.5) > 0.4 && r(1.5) < 0.6, '一半 TTL 时约四到六成');
+  assert.ok(r(2.9) < 0.1, '临近到期才明显掉下去');
+  assert.ok(r(2.99) < 0.1 && r(2.99) > 0.04, '到期前一刻约 5%');
+  assert.equal(r(3.5), 0, '过期即遗忘');
+});
+
+test('short 的稳定度按真实 TTL 走，没有 expiresAt 时按默认 7 天', () => {
+  const withTtl = annotate([mk({ tier: 'short', expiresAt: NOW + 9 * DAY_MS })])[0];
+  const noTtl = annotate([mk({ tier: 'short' })])[0];
+  assert.ok(Math.abs(withTtl.s - 3) < 1e-3, '9 天 TTL → S = 3 天');
+  assert.ok(Math.abs(noTtl.s - 7 / 3) < 1e-3, '默认 7 天 TTL → S ≈ 2.333 天');
+  assert.equal(withTtl.k, 'short');
+});
+
+test('daysUntil 对短期也认拉伸指数', () => {
+  const e = mk({ tier: 'short', expiresAt: NOW + 4 * DAY_MS });
+  const s = annotate([e])[0].s;
+  const d = daysUntil(s, NOW, NOW, 0.5, e.expiresAt, 1.8);
+  assert.ok(Math.abs(retention(s, NOW, NOW + d * DAY_MS, e.expiresAt, 1.8) - 0.5) < 1e-6);
+  assert.ok(d > 1.2, '4 天 TTL 的半衰期应该比纯指数的 0.92 天长');
+});
+
+test('summarize 里 short 走的是同一条拉伸曲线', () => {
+  const short = mk({ tier: 'short', expiresAt: NOW + 7 * DAY_MS });
+  const sum = summarize([short], NOW, 7, 7);
+  assert.ok(sum.series.short[1] > 0.9, '7 天 TTL 过一天不该已经掉到七成');
+  assert.equal(sum.series.short[7], 0);
+});
+
 test('缺失/异常字段不会产生 NaN', () => {
   for (const bad of [{}, { tier: 'x' }, { updatedAt: 'abc' }, { createdAt: NOW + 9e9 }]) {
     const meta = annotate([bad])[0];

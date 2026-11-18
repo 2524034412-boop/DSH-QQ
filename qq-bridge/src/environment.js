@@ -130,6 +130,91 @@ export function notePresenceEvent(prev, next, now = Date.now()) {
   return next;
 }
 
+/**
+ * 最近一段时间的"样子"：温湿度区间 + 有没有人在动。
+ *
+ * 历史每 30 秒一条，一天就是 2880 条——直接翻表格没人看得下去。这里压成
+ * 每 bucketMinutes 一个桶（默认 30 分钟），给面板画曲线、给提示词说"近况"。
+ * 时间一律用真实时间戳换算，所以"几点有人动"永远是对得上的，不会记错。
+ */
+export function recentSummary(entries, { now = Date.now(), hours = 6, bucketMinutes = 30 } = {}) {
+  const span = Math.max(1, Number(hours) || 6) * 3600000;
+  const since = now - span;
+  const rows = (Array.isArray(entries) ? entries : [])
+    .filter((e) => e && Number(e.at) >= since && Number.isFinite(Number(e.tempC)) && Number.isFinite(Number(e.humidity)))
+    .sort((a, b) => Number(a.at) - Number(b.at));
+  if (!rows.length) return null;
+
+  const temps = rows.map((e) => Number(e.tempC));
+  const hums = rows.map((e) => Number(e.humidity));
+  const round = (n) => Math.round(n * 10) / 10;
+
+  // 人体感应：只有带 motion 字段的样本才算数（早期的行没有这些字段）
+  const motionRows = rows.filter((e) => typeof e.motion === 'boolean' || Number.isFinite(Number(e.motionAgo)));
+  const movingRows = motionRows.filter((e) => e.motion === true);
+  const lastMotionAt = movingRows.length ? Number(movingRows[movingRows.length - 1].at) : null;
+  // 卡常高检测：样本够多、却一次"没人"都没有 —— 那不是"一直有人动"，是传感器没接好/电压不够。
+  // 这种情况不能拿去跟她说"刚才有人在动"，否则她天天念叨；面板上单独标出来。
+  const possiblyStuck = motionRows.length >= 20 && movingRows.length === motionRows.length;
+
+  const bucketMs = Math.max(1, Number(bucketMinutes) || 30) * 60000;
+  const buckets = [];
+  for (let start = Math.floor(since / bucketMs) * bucketMs; start <= now; start += bucketMs) {
+    const inBucket = rows.filter((e) => Number(e.at) >= start && Number(e.at) < start + bucketMs);
+    if (!inBucket.length) {
+      buckets.push({ at: start, n: 0, temp: null, humidity: null, moving: 0 });
+      continue;
+    }
+    const bt = inBucket.map((e) => Number(e.tempC));
+    const bh = inBucket.map((e) => Number(e.humidity));
+    buckets.push({
+      at: start,
+      n: inBucket.length,
+      temp: round(bt.reduce((a, b) => a + b, 0) / bt.length),
+      humidity: round(bh.reduce((a, b) => a + b, 0) / bh.length),
+      moving: inBucket.filter((e) => e.motion === true).length,
+    });
+  }
+
+  return {
+    hours: Math.max(1, Number(hours) || 6),
+    bucketMinutes: Math.max(1, Number(bucketMinutes) || 30),
+    samples: rows.length,
+    from: Number(rows[0].at),
+    to: Number(rows[rows.length - 1].at),
+    temp: { min: round(Math.min(...temps)), max: round(Math.max(...temps)), avg: round(temps.reduce((a, b) => a + b, 0) / temps.length) },
+    humidity: { min: round(Math.min(...hums)), max: round(Math.max(...hums)), avg: round(hums.reduce((a, b) => a + b, 0) / hums.length) },
+    presence: {
+      hasData: motionRows.length > 0,
+      movingSamples: movingRows.length,
+      lastMotionAt,
+      quietMinutes: lastMotionAt ? Math.max(0, Math.round((now - lastMotionAt) / 60000)) : null,
+      possiblyStuck
+    },
+    buckets
+  };
+}
+
+/** 把 recentSummary 说成一句人话，**带上时间**（她必须知道这是什么时候的数据）。 */
+export function recentLine(summary, { now = Date.now() } = {}) {
+  if (!summary) return '';
+  const hhmm = (ts) => new Date(Number(ts)).toTimeString().slice(0, 5);
+  const head = `近 ${summary.hours} 小时（${hhmm(summary.from)} → ${hhmm(summary.to)}）：`;
+  const body = `温度 ${summary.temp.min}~${summary.temp.max}°C、湿度 ${Math.round(summary.humidity.min)}~${Math.round(summary.humidity.max)}%`;
+  let tail = '';
+  if (summary.presence && summary.presence.hasData && !summary.presence.possiblyStuck) {
+    if (summary.presence.lastMotionAt) {
+      const q = summary.presence.quietMinutes;
+      tail = `；最后一次有人在动是 ${hhmm(summary.presence.lastMotionAt)}（${q === 0 ? '刚刚' : q + ' 分钟前'}）`;
+      if (q !== null && q >= 30) tail += '，之后一直很安静';
+    } else {
+      tail = '；这段时间没感觉到有人动';
+    }
+  }
+  const stale = now - Number(summary.to) > 10 * 60000 ? `（注意：最后一条是 ${hhmm(summary.to)} 的，不是现在）` : '';
+  return `${head}${body}${tail}。${stale}\n`;
+}
+
 export function environmentLine(reading, { now = Date.now(), staleMinutes = DEFAULT_STALE_MINUTES, presence = true } = {}) {
   if (!reading || !Number.isFinite(Number(reading.at))) return '';
   const ageMs = readingAgeMs(reading, now);

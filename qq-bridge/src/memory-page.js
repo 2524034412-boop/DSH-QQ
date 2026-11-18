@@ -361,15 +361,21 @@ ${socialGraphHtml}
   for(var ni=0;ni<nodes.length;ni++) nodes[ni].i=ni;
 
   // ── 遗忘曲线：R(t)=exp(-(t-updatedAt)/s)，与 memory-retention.js 同一公式 ─────────
+  // 短期（有 exp 的）用拉伸指数：到期仍 ~5%，但前段掉得慢，跟面板那条线一致。
   // 「时间流」拨杆把观察时刻拨到未来：timeOffsetDays>0 时看到的是几天后的星空。
   var DAY=86400000;
   var FADING=0.35;
+  var SHORT_SHAPE=1.8;
   var nowMs=Date.now();
   var timeOffsetDays=0, timeShown=0;
   function retentionOf(n,atMs){
     if(n.exp>0 && atMs>=n.exp) return 0;
     var upd=n.u||n.d||atMs;
     var age=Math.max(0,(atMs-upd)/DAY);
+    if(n.k==='short' && n.exp>0){
+      var ttl=Math.max(.25,(n.exp-upd)/DAY);
+      return Math.exp(-3*Math.pow(age/ttl,SHORT_SHAPE));
+    }
     return Math.exp(-age/n.s);
   }
   // 屏幕上的亮度不等于保持率本身：保持率低于 0.05 的星仍保留一点余烬，

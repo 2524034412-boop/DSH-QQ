@@ -276,7 +276,12 @@ function patchProfilePackage(links) {
   let pkg = { name: `dsh-profile-${PROFILE}`, private: true, dependencies: {}, dsh: { profile: { bundles: [] } } };
   if (fs.existsSync(pkgFile)) {
     try {
-      pkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
+      // 2026-11-17：manifest 被带 BOM 写回（PowerShell Set-Content / Out-File -Encoding UTF8）
+      // 会让 DSH 启动时 readProfileManifest 直接 JSON.parse 失败，连崩几次后它会把
+      // profile 清单重置成空白（bundles 只剩 base + web-app，所有插件消失）。
+      // 这里读之前先剥 BOM，顺手把干净版本写回去，等于每次桥接启动自愈一次。
+      const rawPkg = fs.readFileSync(pkgFile, 'utf8').replace(/^\uFEFF/, '');
+      pkg = JSON.parse(rawPkg);
     } catch (e) {
       fatal(`failed to parse ${pkgFile}: ${e.message}`);
     }

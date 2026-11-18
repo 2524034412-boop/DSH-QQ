@@ -134,6 +134,41 @@ let everSeenOneBotUp = false;
 // 允许主动重启一次 SnowLuma 重新注入；只做一次，避免反复折腾。
 let bootRecoveryTried = false;
 
+// ── 手机推送 ─────────────────────────────────────────────────────────
+// 桥接挂了的时候它自己没法推，所以看门狗自己读配置、自己发。
+async function pushPhone(title, body, group = '看门狗') {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+    const n = cfg.notify || {};
+    if (n.enabled === false) return;
+    const provider = String(n.provider || 'bark');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    if (provider === 'bark' && String(n.barkKey || '').trim()) {
+      const base = String(n.barkServer || 'https://api.day.app').replace(/\/+$/, '');
+      await fetch(`${base}/${encodeURIComponent(String(n.barkKey).trim())}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title, body, group }),
+        signal: controller.signal
+      });
+      log(`已推送手机：${title}`);
+    } else if (provider === 'ntfy' && String(n.ntfyTopic || '').trim()) {
+      const base = String(n.ntfyServer || 'https://ntfy.sh').replace(/\/+$/, '');
+      await fetch(`${base}/${encodeURIComponent(String(n.ntfyTopic).trim())}`, {
+        method: 'POST',
+        headers: { Title: encodeURIComponent(title), Tags: 'warning' },
+        body,
+        signal: controller.signal
+      });
+      log(`已推送手机(ntfy)：${title}`);
+    }
+    clearTimeout(timer);
+  } catch (e) {
+    log(`推送失败：${e?.message ?? e}`);
+  }
+}
+
 async function checkOnce() {
   log('──── check ────');
   const fixes = [];
@@ -204,10 +239,14 @@ async function checkOnce() {
   // 3) 桥接 / 端口对齐
   const needAlign = dshPort && (!listening(3100) || configBaseUrl() !== `http://127.0.0.1:${dshPort}`);
   if (needAlign) {
-    if (!listening(3100)) log('桥接（3100）不在监听 → 重新拉起');
+    if (!listening(3100)) {
+      log('桥接（3100）不在监听 → 重新拉起');
+      void pushPhone('桥接掉线了', '3100 不在监听，看门狗正在自动拉起。');
+    }
     else log(`baseUrl 与 DSH 实际端口不一致（${configBaseUrl()} ≠ 127.0.0.1:${dshPort}）→ 重新对齐`);
     const code = await runAlign(dshPort ? 60 : 180);
     log(`对齐脚本退出码 ${code}`);
+    if (code !== 0) void pushPhone('桥接没能自动恢复', `对齐脚本退出码 ${code}，需要人工看一下。`, '看门狗');
     fixes.push('bridge');
   } else {
     log('桥接与端口正常');

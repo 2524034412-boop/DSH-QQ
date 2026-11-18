@@ -361,6 +361,7 @@ const TOOL_CONFIG_FLAGS = {
   qq_send_sticker: 'sendSticker',
   qq_collect_sticker: 'collectSticker',
   qq_get_self_image: 'getSelfImage',
+  qq_send_selfie: 'sendSelfie',
   qq_sticker_note: 'stickerNote',
   qq_set_sticker_remark: 'setStickerRemark',
 };
@@ -1009,8 +1010,8 @@ server.tool(
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
     text: z.string().describe('要记住的内容（单条上限 4000 字；长叙述可以分几条记，记忆没有条数上限）'),
     tags: z.array(z.string()).optional().describe('可选标签，便于以后检索（最多 5 个，每个 20 字内）'),
-    tier: z.enum(['core', 'long', 'short']).optional().describe('记忆层级：core=核心（永久：身份/主人/底线，以及别人对你这人的人格评价/重要的话）、long=长期（默认：重要事实/约定）、short=短期（默认 3 天过期：临时话题）'),
-    ttlDays: z.number().optional().describe('仅 short 有效：过期天数，默认 3，最大 30')
+    tier: z.enum(['core', 'long', 'short']).optional().describe('记忆层级：core=核心（永久：身份/主人/底线，以及别人对你这人的人格评价/重要的话）、long=长期（默认：重要事实/约定）、short=短期（默认 7 天过期：临时话题）'),
+    ttlDays: z.number().optional().describe('仅 short 有效：过期天数，默认 7，最大 3650')
   },
   async ({ key, token, text, tags, tier, ttlDays }) => {
     try {
@@ -1347,7 +1348,7 @@ if (cfg.socialV2?.tools?.space !== false) {
 if (cfg.socialV2?.tools?.reading !== false) {
   server.tool(
     'qq_reading',
-    '读一段书。默认 mode=read：接着上次读到的地方，把下一段正文取回来给你看（约 2600 字，读完自动往后走，读完一节会翻到下一节）。mode=status：只看读到哪、书架有什么、你自己写过什么批注，不取正文。想聊书、想引用原文、想知道上次读到哪时用。',
+    '读一段书。默认 mode=read：接着上次读到的地方，把下一段正文取回来给你看（约 2600 字）。读完一节会翻到下一节，读完一本会自动接着读书架上的下一本（会用「读完了一本」提示你）。mode=status：只看读到哪、书架有什么、你自己写过什么批注，不取正文。想聊书、想引用原文、想知道上次读到哪时用。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -1372,9 +1373,15 @@ if (cfg.socialV2?.tools?.reading !== false) {
         }
         const q = `?chars=${encodeURIComponent(String(chars || 2600))}`;
         const data = await agentApi('/api/reading/read' + q, { headers: { 'x-agent-token': token } });
+        if (data?.allDone) {
+          return { content: [{ type: 'text', text: `书架上的书都读完了（刚读完《${data.finishedBook || data.title}》）。想接着读新的，得让他往书架里加书。` }] };
+        }
+        const switcher = data.switchedFrom ? `（上一本《${data.switchedFrom}》读完了，这是新的一本。）\n` : '';
         const head = `《${data.title}》第 ${(data.chapter || 0) + 1}/${data.chapters} 章 · ${data.chapterTitle || ''} · 本节 ${data.percent || 0}%`;
-        const tail = data.atEndOfChapter ? '\n\n（这一节读完了，下次会从下一节开头继续。）' : '';
-        return { content: [{ type: 'text', text: `${head}\n\n${data.text || ''}${tail}` }] };
+        const tail = data.atEndOfChapter
+          ? (data.finishedBook ? '\n\n（这一节读完，这本书也读完了。下次会自动接着读下一本。）' : '\n\n（这一节读完了，下次会从下一节开头继续。）')
+          : '';
+        return { content: [{ type: 'text', text: `${switcher}${head}\n\n${data.text || ''}${tail}` }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `读书失败：${error?.message ?? error}` }], isError: true };
       }
@@ -1946,6 +1953,34 @@ if (cfg.socialV2?.voice?.enabled !== false && cfg.socialV2?.tools?.sendVoice !==
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `获取语音库失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.sendSelfie !== false) {
+  server.tool(
+    'qq_send_selfie',
+    '给对方发一张「自己此刻的样子」：桌面上的你会切到对应表情、看向镜头，截图做成带白色描边的贴纸，再当一张图发到会话里。不传 expression 就按你当前的心情拍（现在在生气就拍生气的脸）。可选表情：开心 / 生气 / 害羞 / 吃醋 / 委屈 / 难过 / 害怕 / 好奇 / 得意 / 平静，也可以直接写 爱心眼 圈圈眼 屑屑眼 脸红 流冷汗 流泪 黑脸 ＞＜ 兔牙。framing: bust=半身（默认，像表情包）/ full=全身。和 qq_send_sticker 一样一条消息只是一张图、不带文字：想说的话请先用 qq_send_message 单独发，再发这张。比起发收藏表情，这个更「是你自己」，适合：撒娇、生气、害羞、吃醋、被夸之后的反应；自拍可以多发一点，但别连着刷屏（每小时有上限）。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      expression: z.string().optional().describe('想拍的表情/心情；不传就用你当前的心情'),
+      framing: z.enum(['bust', 'full']).optional().describe('bust=半身（默认）/ full=全身'),
+      replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（可选）'),
+      atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊可选，私聊不可用）')
+    },
+    async ({ key, token, expression, framing, replyToMessageId, atUserId }) => {
+      try {
+        const data = await agentApi('/api/socialV2/send-selfie', {
+          method: 'POST',
+          body: JSON.stringify({ key, expression: expression || '', framing: framing || 'bust', replyToMessageId, atUserId: atUserId ?? null }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 120000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `发送自拍失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );

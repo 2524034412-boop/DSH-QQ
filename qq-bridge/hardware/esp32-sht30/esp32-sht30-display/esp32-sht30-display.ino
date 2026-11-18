@@ -255,7 +255,7 @@ void loop() {
   // 有人/没人这一行每圈都看，状态一变立刻重画（不用等 30 秒）
 #if HAS_DISPLAY
   if (displayOk) {
-    bool present = motionSeen && (millis() - lastMotionMs) < 5000;
+    bool present = motionSeen && (millis() - lastMotionMs) < 20000;   // 和 JSON 对齐，挥手后亮 20 秒
     int8_t now = present ? 1 : 0;
     if (now != lastPresenceShown) {
       drawPresence(present);
@@ -290,7 +290,8 @@ void loop() {
   // motion=1 表示"刚刚还在动"（3 秒内）；motionAgo=多少秒前动过，-1 表示上电至今没感知到人
   char line[160];
   long motionAgo = motionSeen ? (long)((millis() - lastMotionMs) / 1000) : -1;
-  int  motionNow = (motionSeen && (millis() - lastMotionMs) < 3000) ? 1 : 0;
+  // 20 秒窗口：PIR 自身只保持 3 秒，太短了，肉眼和面板都抓不住。
+  int  motionNow = (motionSeen && (millis() - lastMotionMs) < 20000) ? 1 : 0;
   snprintf(line, sizeof(line),
            "{\"tempC\":%.1f,\"humidity\":%.1f,\"fw\":\"sht30-display\",\"uptime\":%lu,\"motion\":%d,\"motionAgo\":%ld}",
            t, h, (unsigned long)(millis() / 1000), motionNow, motionAgo);

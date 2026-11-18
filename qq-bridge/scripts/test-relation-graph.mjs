@@ -144,16 +144,16 @@ ok('时间流拨到未来，久没聊的人先暗下去', () => {
 
 // ── 隐私 ────────────────────────────────────────────────────────────────
 ok('QQ 号默认打码', () => {
-  assert.equal(maskUid('100000000'), '1000****00');
+  assert.equal(maskUid('2524034412'), '2524****12');
   assert.equal(maskUid('123'), '1**');
   assert.equal(maskUid(''), '未知');
 });
 
 ok('返回对象里没有整份 state 字段', () => {
   const g = buildSocialGraph({
-    affinity: { '100000000': { score: 90, love: 40, lastAt: NOW }, '1234': { score: 30, lastAt: NOW } },
+    affinity: { '2524034412': { score: 90, love: 40, lastAt: NOW }, '1234': { score: 30, lastAt: NOW } },
     impressions: { '1234': { text: '话少', sentiment: '中性', traits: ['话少'] } },
-    ownerQQ: '100000000',
+    ownerQQ: '2524034412',
     now: NOW
   });
   const json = JSON.stringify(g);

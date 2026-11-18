@@ -41,13 +41,18 @@ import { personalityStyles, personalityScript } from './dashboard-personality.js
 import { replayStyles, replayScript } from './dashboard-replay.js';
 import { renderAvatarPage } from './avatar-page.js';
 import { renderSpacePage } from './space-page.js';
+import { renderHerPage } from './her-page.js';
+import { createSelfieStore } from './selfie-store.mjs';
 import { renderStickerPage } from './sticker-page.js';
 import { buildSocialGraph, buildPersonLinks, buildSemanticEdges } from './relation-graph.js';
 import { corePersonaHint, alreadyRemembered } from './core-memory-hint.js';
-import { environmentLine, isFresh, normalizeReading, notePresenceEvent, readingAgeMs, summarizeHistory, DEFAULT_STALE_MINUTES } from './environment.js';
+import { environmentLine, isFresh, normalizeReading, notePresenceEvent, readingAgeMs, summarizeHistory, recentSummary, recentLine, DEFAULT_STALE_MINUTES } from './environment.js';
+import { consolidateMemories } from './memory-consolidate.js';
+import { WeatherService, outdoorLine, dressAdvice } from './weather.js';
+import { Notifier } from './notify.js';
 import { avatarStyles } from './dashboard-avatar.js';
 import { summarize as summarizeRetention } from './memory-retention.js';
-import { resolvePriceTable } from './model-prices.js';
+import { resolvePriceTable, isPeakAt } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
 import {
   loadSlang,
@@ -79,6 +84,44 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const STATE_DIR = path.join(ROOT, 'state');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
+const selfieStore = createSelfieStore(STATE_DIR);
+
+// ── 桌面上的她（Live2D 透明置顶窗）开关 ─────────────────────────────────────
+// 那个 Electron 小窗归 DSH 里的「🐋 她」按钮管：桥接只负责起停。
+// 三处环境坑（都是实测踩出来的，别删）：
+//   1) launch 时 DSH 的 env 里带 ELECTRON_RUN_AS_NODE=1，不清掉会跑成纯 node；
+//   2) 必须 --no-sandbox，否则进程在 ready 之前直接死；
+//   3) 必须指定 --user-data-dir，默认 %APPDATA% 目录在这台机器上写不进去。
+const DESK_ROOT = 'D:\\DSH\\live2d-desk';
+function deskWindowPid() {
+  try {
+    const out = execFileSync('powershell', ['-NoProfile', '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name='electron.exe'\" | Where-Object { $_.CommandLine -like '*live2d-desk*' -and $_.CommandLine -notlike '*--type=*' } | Select-Object -First 1 -ExpandProperty ProcessId"
+    ], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+    const pid = Number(String(out).trim().split(/\s+/)[0]);
+    return Number.isFinite(pid) && pid > 0 ? pid : 0;
+  } catch {
+    return 0;
+  }
+}
+function deskWindowStart() {
+  const exe = path.join(DESK_ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
+  if (!fs.existsSync(exe)) throw new Error(`找不到 electron：${exe}`);
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const child = spawn(exe, [DESK_ROOT, '--no-sandbox', `--user-data-dir=${path.join(DESK_ROOT, 'userdata')}`], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env
+  });
+  child.unref();
+  return child.pid;
+}
+function deskWindowStop(pid) {
+  if (!pid) return;
+  try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 10000 }); } catch {}
+}
 
 // ── 梗百科（本地词库 + cnmeme 兜底）──────────────────────────────────────────
 const MEME_DB_FILE = path.join(ROOT, 'data', 'memes.db');
@@ -405,7 +448,14 @@ function readEnvironment() {
 
 function appendEnvironmentHistory(reading) {
   try {
-    fs.appendFileSync(ENV_HISTORY_FILE, `${JSON.stringify({ at: reading.at, tempC: reading.tempC, humidity: reading.humidity })}\n`);
+    // 以前只写 at/tempC/humidity —— 人体感应（motion / motionAgo / presenceEventAt）
+    // 和历史一起被丢掉了，事后想回头看"昨晚几点有人在"就查不到。现在一起落盘。
+    const row = { at: reading.at, tempC: reading.tempC, humidity: reading.humidity };
+    if (Number.isFinite(Number(reading.pressure))) row.pressure = Number(reading.pressure);
+    if (Number.isFinite(Number(reading.motionAgo))) row.motionAgo = Math.round(Number(reading.motionAgo));
+    if (typeof reading.motion === 'boolean') row.motion = reading.motion;
+    if (Number.isFinite(Number(reading.presenceEventAt))) row.presenceEventAt = Number(reading.presenceEventAt);
+    fs.appendFileSync(ENV_HISTORY_FILE, `${JSON.stringify(row)}\n`);
     if (fs.statSync(ENV_HISTORY_FILE).size > 512 * 1024) {
       const kept = fs.readFileSync(ENV_HISTORY_FILE, 'utf8').split('\n').filter(Boolean).slice(-ENV_HISTORY_MAX);
       atomicWriteText(ENV_HISTORY_FILE, `${kept.join('\n')}\n`);
@@ -885,6 +935,15 @@ function loadConfig() {
     sessionCwd: file.sessionCwd ?? '',
     agentPreset: file.agentPreset ?? 'qq-chat',
     workspaceTitle: file.workspaceTitle ?? 'QQ 聊天',
+    // 网页群：把她的一间"房子"接进来。网页里的消息当成下面这些假群号里的普通群消息，
+    // 走同一条处理链；她的回复从 webchat.baseUrl 投回去，而不是发到 QQ。
+    webchat: file.webchat ? {
+      enabled: file.webchat.enabled !== false,
+      baseUrl: String(file.webchat.baseUrl ?? 'http://127.0.0.1:3300'),
+      inboundPort: Number(file.webchat.inboundPort ?? 3102),
+      token: String(file.webchat.token ?? ''),
+      groups: normalizeIdList(file.webchat.groups ?? [])
+    } : null,
     ownerQQ: normalizeOwnerQQ(file.ownerQQ),
     allow: {
       private: normalizeIdList(file.allow?.private ?? file.allow?.privates ?? []),
@@ -913,6 +972,23 @@ function loadConfig() {
       ...(file.environment ?? {})
     },
     // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
+    // 手机推送（Bark / ntfy）：不配 key 就是关的，不会报错
+    notify: {
+      enabled: true,
+      provider: 'bark',
+      barkKey: '',
+      barkServer: 'https://api.day.app',
+      ntfyTopic: '',
+      ntfyServer: 'https://ntfy.sh',
+      group: '小鲸鱼',
+      ...(file.notify ?? {})
+    },
+    // 室外天气（wttr.in）：place 填城市英文名或拼音
+    weather: {
+      enabled: true,
+      place: 'Nanjing',
+      ...(file.weather ?? {})
+    },
     pricing: file.pricing ?? null,
     security: {
       interceptNotify: true,
@@ -1014,7 +1090,8 @@ function loadConfig() {
         setStickerRemark: false,
         stickerNote: true,
         collectSticker: true,
-        getSelfImage: true
+        getSelfImage: true,
+        sendSelfie: true
       },
       wake: {
         defaultMode: 'diving',
@@ -1155,6 +1232,7 @@ function loadConfig() {
     stickerNote: true,
     collectSticker: true,
     getSelfImage: true,
+    sendSelfie: true,
     sendVoice: false,
     ...(cfg.socialV2.tools ?? {})
   };
@@ -1660,6 +1738,14 @@ async function main() {
   const slangSubmitTimes = new Map();   // key -> [timestamp]：AI 提交黑话候选限频（内存态）
   const feedbackTimes = new Map();      // key -> [timestamp]：AI 反馈限频（内存态）
   const slangResearchingIds = new Set(); // 正在研究中的候选 id，防止重复排队
+  // ── QQ 指令通道：主人私聊发 /dsh <指令> → 直接交给 DSH 的 agent 执行 ──
+  // 走独立会话（默认 standard 预设，带 shell/文件工具），和她的聊天互不干扰。
+  const controlSessions = new Set();      // sessionId -> 指令会话
+  const controlCollectors = new Map();    // sessionId -> turn collector
+  const controlWaiters = new Map();       // sessionId -> [{resolve,reject,timer}]
+  const CONTROL_SESSION_FILE = path.join(STATE_DIR, 'control-session.json');
+  let controlSessionId = null;
+  let controlBusy = false;
   const learnerSessions = new Set();    // sessionId -> 学习会话（不映射 QQ，不发送）
   const learnerCollectors = new Map();  // sessionId -> turn collector
   const learnerWaiters = new Map();     // sessionId -> [{resolve,reject,timer}]
@@ -1785,29 +1871,88 @@ async function main() {
     return r ? r.books : [];
   }
 
+  /**
+   * 该读哪本：先读「读了一半的」，没有的话按书架顺序拿下一本没读过的。
+   *
+   * 以前这里只取「最近更新的那本」。于是她读完第一本之后，进度永远停在第一本的
+   * 最后一章，书架上的第 02~10 卷一次都没被打开过——她嘴里的「一直在读第一本」
+   * 就是这么来的，不是她不想换，是没人给她换。
+   */
+  function readingPick(books, progress) {
+    const unfinished = books.filter((b) => progress[b.id]?.finished !== true);
+    if (!unfinished.length) return null;
+    const started = unfinished.filter((b) => progress[b.id]?.updatedAt);
+    if (started.length) {
+      started.sort((a, b) => Number(progress[b.id].updatedAt) - Number(progress[a.id].updatedAt));
+      return started[0];
+    }
+    // books.json 已经按书名排好（[01] … [02] …），取第一本没读过的正好是下一卷
+    return unfinished[0];
+  }
+
+  /**
+   * epub 开头那几页不是正文：封面、转载信息、制作信息、简介、目录……
+   * 它们每页只有几十到几百字。不跳过的话，她一次唤醒只能啃下 64 个字，
+   * 章节数字还停在「第 1/12 章」，看着就像一直卡在第一页。
+   */
+  const FRONT_MATTER_TITLE = /^(封面|书名|扉页|版权|免责|简介|内容简介|作品简介|目录|转载信息|制作信息|制作说明|录入|校对|作者|译者|插画|彩图|彩页|黑白插画|人物介绍)/;
+  function isFrontMatterChapter(chapter, index) {
+    if (index >= 10) return false; // 正文中间再短的章也不跳（诗、独白、后记）
+    const title = String(chapter?.title || '').trim();
+    const len = Number(chapter?.chars) || 0;
+    if (FRONT_MATTER_TITLE.test(title)) return true;
+    return len > 0 && len < 500;
+  }
+  /** 这本书第一个"真正文"的章节下标；找不到就退化成 0。 */
+  function firstReadableChapter(book) {
+    const chapters = Array.isArray(book?.chapters) ? book.chapters : [];
+    for (let i = 0; i < chapters.length; i += 1) {
+      if (isFrontMatterChapter(chapters[i], i)) continue;
+      if (readingChapterText(book, i)) return i;
+    }
+    return 0;
+  }
+
+  // 桥接自己记一份「真进度」。dsh-reading 的 /chapter 页面每打开一次就把
+  // progress 写成 {chapter:n}（不带 offset），面板一开进度就被拉回章节开头，
+  // 于是她反复重读同一段。这份记录用来把被拉回去的进度顶回来。
+  const READING_LEDGER_FILE = path.join(STATE_DIR, 'reading-progress.json');
+  function loadReadingProgressLedger() {
+    try {
+      const v = readJsonSafe(READING_LEDGER_FILE, {});
+      return v && typeof v === 'object' ? v : {};
+    } catch {
+      return {};
+    }
+  }
+  function saveReadingProgressLedger(map) {
+    try { atomicWriteJson(READING_LEDGER_FILE, map); } catch { /* 记不住也不该让读书挂掉 */ }
+  }
+
   function readingForSpace() {
     try {
       const base = path.join(process.env.USERPROFILE || '', '.dsh', 'reading', 'state');
       const books = JSON.parse(fs.readFileSync(path.join(base, 'books.json'), 'utf8')).books || [];
       const progress = JSON.parse(fs.readFileSync(path.join(base, 'progress.json'), 'utf8')) || {};
       const list = [];
-      let best = null;
       for (const b of books) {
         const p = progress[b.id];
         const total = Array.isArray(b.chapters) ? b.chapters.length : 0;
         const chapter = Number(p?.chapter) || 0;
-        const item = {
+        const finished = p?.finished === true;
+        list.push({
           id: String(b.id || ''),
           title: String(b.title || ''),
           chapter,
           chapters: total,
-          progress: total > 0 ? Math.round(((chapter + 1) / total) * 100) : 0
-        };
-        list.push(item);
-        if (p && p.updatedAt && (!best || Number(p.updatedAt) > best.updatedAt)) {
-          best = { ...item, updatedAt: Number(p.updatedAt) };
-        }
+          finished,
+          progress: finished ? 100 : (total > 0 ? Math.round(((chapter + 1) / total) * 100) : 0)
+        });
       }
+      const picked = readingPick(books, progress);
+      const best = picked
+        ? { ...list.find((x) => x.id === picked.id), updatedAt: Number(progress[picked.id]?.updatedAt) || 0 }
+        : null;
       return { book: best, books: list.slice(0, 12) };
     } catch {
       return { book: null, books: [] };
@@ -1867,35 +2012,91 @@ async function main() {
     } catch {
       /* 没有进度就从头开始 */
     }
-    const r = readingForSpace();
-    const cur = r && r.book ? books.find((b) => b.id === r.book.id) : null;
+    const saveProgress = () => { try { atomicWriteJson(progressFile, progress); } catch { /* 写不进也不该让对话挂掉 */ } };
+    const ledger = loadReadingProgressLedger();
+
+    let cur = readingPick(books, progress);
     if (!cur) return null;
 
-    const p = progress[cur.id] || { chapter: 0, offset: 0 };
-    let chapter = Math.max(0, Number(p.chapter) || 0);
-    let offset = Math.max(0, Number(p.offset) || 0);
+    // 定位到某一本的阅读位置；顺便把被 /chapter 页面拉回去的进度顶回来
+    const positionIn = (book) => {
+      const p = progress[book.id];
+      let c = Math.max(0, Number(p?.chapter) || 0);
+      let o = Math.max(0, Number(p?.offset) || 0);
+      if (!p) {
+        c = firstReadableChapter(book);
+        o = 0;
+      }
+      const rec = ledger[book.id];
+      if (rec && Number(rec.updatedAt) > 0) {
+        const tooFarBack = c < Number(rec.chapter) || (c === Number(rec.chapter) && o + 2000 < Number(rec.offset));
+        if (tooFarBack) {
+          const was = c;
+          c = Number(rec.chapter);
+          o = Number(rec.offset) || 0;
+          log(`[reading] 《${book.title}》进度被外部改回第 ${was + 1} 章，已按桥接记录恢复（第 ${c + 1} 章）`);
+        }
+      }
+      return { chapter: c, offset: o };
+    };
+    const remember = (book, chapter, offset, extra = {}) => {
+      ledger[book.id] = { chapter, offset, updatedAt: Date.now(), ...extra };
+      saveReadingProgressLedger(ledger);
+    };
+
+    let switchedFrom = null;
+    let finishedBook = null;
+    // 这本书还一行都没读过 = 是刚换过来的新一本。上一本是谁？取最近读完的那本，
+    // 好让工具那边能说一句「上一本读完了」——换书是上一次调用结束时发生的，
+    // 这里不补这一句的话，她只会突然发现书名变了。
+    if (!progress[cur.id]) {
+      const done = books
+        .filter((b) => progress[b.id]?.finished === true)
+        .sort((a, b) => Number(progress[a.id].updatedAt) - Number(progress[b.id].updatedAt));
+      if (done.length) switchedFrom = done[done.length - 1].title;
+    }
+    let { chapter, offset } = positionIn(cur);
     let text = readingChapterText(cur, chapter);
+    if (!text) {
+      chapter = firstReadableChapter(cur);
+      offset = 0;
+      text = readingChapterText(cur, chapter);
+    }
     if (!text) return null;
+
+    // 走到这一章末尾：能翻下一章就翻；已经是最后一章 = 整本读完了
     if (offset >= text.length) {
       if (chapter + 1 < cur.chapters.length) {
         chapter += 1;
         offset = 0;
         text = readingChapterText(cur, chapter);
+        if (!text) return null;
       } else {
-        offset = Math.max(0, text.length - 1);
+        finishedBook = cur.title;
+        progress[cur.id] = { chapter: Math.max(0, cur.chapters.length - 1), offset: 0, finished: true, updatedAt: Date.now() };
+        saveProgress();
+        remember(cur, Math.max(0, cur.chapters.length - 1), 0, { finished: true });
+        const next = readingPick(books, progress);
+        log(`[reading] 《${cur.title}》读完了${next ? `，接着读《${next.title}》` : '，书架上的书都读完了'}`);
+        if (!next) return { id: cur.id, title: cur.title, chapter: Math.max(0, cur.chapters.length - 1), chapters: cur.chapters.length, chapterTitle: '', text: '', atEndOfChapter: true, percent: 100, finishedBook, allDone: true };
+        switchedFrom = cur.title;
+        cur = next;
+        ({ chapter, offset } = positionIn(cur));
+        text = readingChapterText(cur, chapter);
+        if (!text) return null;
       }
     }
+
     const slice = text.slice(offset, offset + maxChars);
     const nextOffset = offset + slice.length;
     const atEnd = nextOffset >= text.length;
-    progress[cur.id] = atEnd && chapter + 1 < cur.chapters.length
+    const lastChapter = chapter + 1 >= cur.chapters.length;
+    progress[cur.id] = atEnd && !lastChapter
       ? { chapter: chapter + 1, offset: 0, updatedAt: Date.now() }
-      : { chapter, offset: atEnd ? 0 : nextOffset, updatedAt: Date.now() };
-    try {
-      atomicWriteJson(progressFile, progress);
-    } catch {
-      /* 写不进也不该让对话挂掉 */
-    }
+      : { chapter, offset: atEnd ? 0 : nextOffset, updatedAt: Date.now(), ...(atEnd && lastChapter ? { finished: true } : {}) };
+    if (atEnd && lastChapter) finishedBook = finishedBook || cur.title;
+    saveProgress();
+    remember(cur, progress[cur.id].chapter, progress[cur.id].offset, atEnd && lastChapter ? { finished: true } : {});
     try {
       const sessionsFile = path.join(statePath, 'sessions.json');
       let sessions = [];
@@ -1918,7 +2119,10 @@ async function main() {
       chapterTitle: cur.chapters[chapter]?.title || '',
       text: slice,
       atEndOfChapter: atEnd,
-      percent: Math.round((offset / Math.max(1, text.length)) * 100)
+      percent: Math.round((offset / Math.max(1, text.length)) * 100),
+      switchedFrom,
+      finishedBook,
+      allDone: false
     };
   }
   /** 她在那本书上写过的批注（最近 3 条）。读不到就是空数组。 */
@@ -2191,7 +2395,7 @@ async function main() {
         if (assertSendAllowed) assertSendAllowed();
         // 语音条比图片大、要过一次 SILK 转码，给 60s 预算（文本/图片共用同一 sendChain，
         // 所以这条语音发完之前后面的文本会自然排队，不会插队到语音前面）。
-        const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+        const httpUrl = onebotHttpBaseForKey(key);
         const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
         const params = kind === 'private'
           ? { user_id: Number(id), message: [recordSegment] }
@@ -2419,6 +2623,33 @@ async function main() {
     try { return await ittsStarting; }
     finally { ittsStarting = null; }
   }
+  // 谁占着这个端口（用来接管"不是我们起的"那个 IndexTTS，否则空闲/游戏都管不到它）
+  function portOwnerPid(port) {
+    try {
+      const out = execFileSync('netstat', ['-ano'], { windowsHide: true, encoding: 'utf8', timeout: 8000 });
+      for (const line of String(out).split(/\r?\n/)) {
+        if (!line.includes(':' + port + ' ')) continue;
+        if (!/LISTENING/i.test(line)) continue;
+        const parts = line.trim().split(/\s+/);
+        const pid = Number(parts[parts.length - 1]);
+        if (pid > 0) return pid;
+      }
+    } catch {}
+    return 0;
+  }
+
+  // 认得出的游戏进程（命中任意一个就认为在打游戏）
+  const GAME_PROCS = ['minecraft', 'javaw', 'java.exe', 'yuanshen', 'genshinimpact', 'starrail', 'zenlesszonezero',
+    'cs2', 'csgo', 'valorant', 'league of legends', 'tslgame', 'r5apex', 'eldenring', 'cyberpunk2077',
+    'forzahorizon', 'gta5', 'gtav', 'rdr2', 'steam.exe', 'epicgameslauncher', 'battle.net', 'wuthering'];
+  function gameRunning() {
+    try {
+      const out = execFileSync('tasklist', ['/FO', 'CSV', '/NH'], { windowsHide: true, encoding: 'utf8', timeout: 8000 });
+      const low = String(out).toLowerCase();
+      return GAME_PROCS.some((g) => low.includes(g));
+    } catch { return false; }
+  }
+
   function stopIndexttsServer(reason = '空闲卸载') {
     if (!ittsProc) return;
     const pid = ittsProc.pid;
@@ -2455,6 +2686,24 @@ async function main() {
           if (!open) ensureTtsServer().catch((e) => log('[voice] 预加载失败：' + (e?.message ?? e)));
         });
       }
+      return;
+    }
+    // 不是我们起的（比如上次 bridge 重启前就在跑）→ 接管，否则下面两条都管不到它
+    if (!ittsProc) {
+      void tcpPortOpen(indexttsPort()).then((open) => {
+        if (!open || ittsProc) return;
+        const pid = portOwnerPid(indexttsPort());
+        if (pid) {
+          ittsProc = { pid, adopted: true, unref() {}, kill() {} };
+          ittsLastUsedAt = Date.now();
+          log('[voice] 接管已在运行的 IndexTTS（PID ' + pid + '）');
+        }
+      });
+    }
+    // 发现游戏就立刻让位：6GB 显存先还给他
+    if (ittsProc && gameRunning()) {
+      stopIndexttsServer('检测到游戏');
+      ittsLastUsedAt = 0;
       return;
     }
     if (ittsProc && ittsLastUsedAt && Date.now() - ittsLastUsedAt >= vc.idleUnloadMs) stopIndexttsServer('空闲超时');
@@ -2509,7 +2758,13 @@ async function main() {
           throw err;
         }
       }
-      if (!warm) await ensureIndexttsServer();
+      if (!warm) {
+        // 不在这一条上死等（模型加载一分钟以上）：后台拉起，这一条先用文字，下一条再发语音
+        ensureIndexttsServer().catch((e) => log('[voice] 预热失败：' + (e?.message ?? e)));
+        const err = new Error('她的声音正在准备（模型要加载一分钟以上），这一条先用文字，下一条再发语音');
+        err.code = 'VOICE_WARMING';
+        throw err;
+      }
       ittsLastUsedAt = Date.now();
       const reqBody = JSON.stringify({
         text: clean,
@@ -2660,7 +2915,7 @@ async function main() {
     const wantReadback = readback === true;
     if (wantReadback && sent.messageId) {
       try {
-        const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+        const httpUrl = onebotHttpBaseForKey(key);
         const res = await fetch(`${httpUrl}/fetch_ptt_text`, {
           method: 'POST',
           headers: {
@@ -2717,7 +2972,7 @@ async function main() {
     segments.push({ type: 'image', data: { file: 'base64://' + image.buffer.toString('base64') } });
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
     const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
-    const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    const httpUrl = onebotHttpBaseForKey(key);
     // 与文本发送共用 sendChain，保证“先文字后表情”的真人顺序不被并发工具调用打乱。
     let sendResolve;
     let sendReject;
@@ -2755,6 +3010,95 @@ async function main() {
     stickerEntries = updated.entries;
     saveStickerStoreSafe();
     return { entry: updated.entry, messageId: data?.message_id ?? null };
+  }
+
+﻿  // ── 自拍表情包：让桌面上的她切到对应表情、截图做成贴纸，再当图片发出去 ──
+  // 协议走文件（桌面窗在 Electron 里绑不了端口）：写 state/selfie-request.json，桌面窗 350ms 轮询、
+  // 拍完写 state/selfie-result.json，贴纸落在 state/selfies/。桌面窗没开就先拉起来，拍完再收回。
+  const SELFIE_REQ = path.join(STATE_DIR, 'selfie-request.json');
+  const SELFIE_RES = path.join(STATE_DIR, 'selfie-result.json');
+  let selfieChain = Promise.resolve();
+  const selfieTimes = [];
+  async function captureSelfie(expr, framing) {
+    const task = selfieChain.then(async () => {
+      let started = 0;
+      if (!deskWindowPid()) { started = deskWindowStart(); await sleep(6000); }
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      try { fs.rmSync(SELFIE_RES, { force: true }); } catch {}
+      fs.mkdirSync(STATE_DIR, { recursive: true });
+      fs.writeFileSync(SELFIE_REQ, JSON.stringify({ id, expr: String(expr || ''), framing: framing === 'full' ? 'full' : 'bust', at: Date.now() }), 'utf8');
+      const deadline = Date.now() + (started ? 45000 : 25000);
+      try {
+        while (Date.now() < deadline) {
+          await sleep(300);
+          let r = null;
+          try { r = JSON.parse(fs.readFileSync(SELFIE_RES, 'utf8')); } catch { continue; }
+          if (!r || r.id !== id) continue;
+          if (!r.ok) throw new Error('桌面窗拍照失败：' + (r.error || '未知'));
+          return r;
+        }
+        throw new Error('桌面窗没有响应（可能还在加载模型，稍后再试）');
+      } finally {
+        if (started) deskWindowStop(deskWindowPid());
+      }
+    });
+    selfieChain = task.catch(() => {});
+    return task;
+  }
+  async function sendSelfieV2(key, options = {}) {
+    const assertSendAllowed = captureSendGuard(key);
+    const maxPerHour = Number(cfg.socialV2?.selfie?.maxPerHour) || 12;
+    const nowTs = Date.now();
+    while (selfieTimes.length && nowTs - selfieTimes[0] > 3600000) selfieTimes.shift();
+    if (selfieTimes.length >= maxPerHour) throw new Error('这一小时自拍已经发了 ' + selfieTimes.length + ' 张，歇一会儿再拍（上限 ' + maxPerHour + '）');
+    // 先翻历史：同一种表情以前拍过，就直接发那张（不用再叫桌面窗出来）；每发 5 次现拍一张新的，免得永远是同一张
+    const exprKey = String(options.expr || '默认');
+    let shot = null;
+    let reused = false;
+    const old = options.fresh === true ? null : selfieStore.pick(exprKey);
+    if (old && (old.sent || 0) % 5 !== 4) {
+      shot = { file: old.file, expression: old.expression, width: 0, height: 0 };
+      reused = true;
+    } else {
+      shot = await captureSelfie(options.expr, options.framing);
+      selfieStore.add(shot.file, shot.expression || exprKey);
+    }
+    const buf = fs.readFileSync(shot.file);
+    const [kind, id] = key.split(':');
+    const segments = [];
+    if (options.replyToMessageId !== undefined && options.replyToMessageId !== null && String(options.replyToMessageId).trim() !== '') {
+      segments.push({ type: 'reply', data: { id: String(options.replyToMessageId).trim() } });
+    }
+    if (options.atUserId !== undefined && options.atUserId !== null && String(options.atUserId).trim() !== '') {
+      const at = String(options.atUserId).trim();
+      if (!/^\d+$/.test(at)) throw new Error('atUserId 必须是正整数 QQ 号，且不能为 all');
+      segments.push({ type: 'at', data: { qq: at } });
+    }
+    segments.push({ type: 'image', data: { file: 'base64://' + buf.toString('base64') } });
+    const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
+    const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
+    const httpUrl = onebotHttpBaseForKey(key);
+    let sendResolve; let sendReject;
+    const sendResult = new Promise((resolve, reject) => { sendResolve = resolve; sendReject = reject; });
+    sendChain = sendChain.then(async () => {
+      try {
+        await sleep(randInt(500, 1400));
+        assertSendAllowed();
+        const res = await fetch(`${httpUrl}/${action}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}) },
+          body: JSON.stringify(params),
+          signal: AbortSignal.timeout(15000)
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.status !== 'ok' || body.retcode !== 0) throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}`);
+        sendResolve(body.data);
+      } catch (error) { sendReject(error); }
+    });
+    const data = await sendResult;
+    selfieTimes.push(Date.now());
+    selfieStore.markSent(shot.file);
+    return { expression: shot.expression || '默认', file: shot.file, width: shot.width, height: shot.height, messageId: data?.message_id ?? null, reused };
   }
 
   // 更新本地 AI 认知（含义/标签/用法）。
@@ -3013,6 +3357,108 @@ async function main() {
       arr.push(waiter);
       learnerWaiters.set(sessionId, arr);
     });
+  }
+
+  // ── 指令通道实现 ──────────────────────────────────────────────────
+  function controlCfg() { return cfg.control ?? {}; }
+  function controlPrefix() { return String(controlCfg().prefix || '/dsh'); }
+
+  function isControlCommand(key, text) {
+    const c = controlCfg();
+    if (c.enabled === false) return false;
+    const raw = String(text ?? '').trim();
+    const p = controlPrefix();
+    if (!raw.startsWith(p)) return false;
+    if (c.ownerOnly !== false) {
+      const ownerKey = 'private:' + String(cfg.ownerQQ ?? '');
+      if (key !== ownerKey) return false;
+    }
+    return raw.slice(p.length).trim().length > 0;
+  }
+
+  async function ensureControlSession() {
+    if (controlSessionId) return controlSessionId;
+    const preset = String(controlCfg().preset || 'standard');
+    try {
+      const saved = JSON.parse(fs.readFileSync(CONTROL_SESSION_FILE, 'utf8'));
+      if (saved?.sessionId && saved.preset === preset) {
+        controlSessionId = saved.sessionId;
+        api.events.follow(controlSessionId);
+        log(`指令会话复用：${controlSessionId}（preset=${preset}）`);
+        return controlSessionId;
+      }
+    } catch {}
+    const dir = path.join(STATE_DIR, 'control-workspace');
+    fs.mkdirSync(dir, { recursive: true });
+    const ws = unwrap(await api.workspace.create({ path: dir }), 'control workspace.create');
+    const params = { workspaceId: ws.workspace.workspaceId, agentPreset: preset };
+    const value = unwrap(await api.sessions.create(params), 'control session.create');
+    controlSessionId = value.sessionId;
+    controlSessions.add(controlSessionId);
+    api.events.follow(controlSessionId);
+    atomicWriteJson(CONTROL_SESSION_FILE, { sessionId: controlSessionId, preset, at: Date.now() });
+    log(`指令会话已创建：${controlSessionId}（preset=${preset}）`);
+    return controlSessionId;
+  }
+
+  function waitControlTurn(sessionId, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const arr = controlWaiters.get(sessionId) ?? [];
+        const idx = arr.findIndex((w) => w.timer === timer);
+        if (idx >= 0) arr.splice(idx, 1);
+        if (arr.length === 0) controlWaiters.delete(sessionId);
+        reject(new Error(`指令执行超时（${Math.round(timeoutMs / 1000)} 秒）`));
+      }, timeoutMs);
+      const arr = controlWaiters.get(sessionId) ?? [];
+      arr.push({ resolve, reject, timer });
+      controlWaiters.set(sessionId, arr);
+    });
+  }
+
+  function forgetControlSession() {
+    const old = controlSessionId;
+    controlSessionId = null;
+    if (old) controlSessions.delete(old);
+    try { fs.unlinkSync(CONTROL_SESSION_FILE); } catch {}
+  }
+
+  async function runControlCommand(key, text) {
+    const c = controlCfg();
+    const command = String(text).slice(controlPrefix().length).trim();
+    const timeoutMs = Math.max(30000, Math.min(600000, Number(c.timeoutMs) || 240000));
+    if (controlBusy) {
+      await sendToQQ(key, '上一条还在跑，等它完。');
+      return;
+    }
+    controlBusy = true;
+    const started = Date.now();
+    try {
+      const sessionId = await ensureControlSession();
+      const accepted = await api.sessions.prompt({
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: command }]
+      });
+      if (!accepted?.result?.ok) {
+        const err = accepted?.result?.error ?? {};
+        throw new Error(`${err.code || 'prompt-rejected'}：${err.message || '被拒绝'}`);
+      }
+      const output = await waitControlTurn(sessionId, timeoutMs);
+      const secs = Math.round((Date.now() - started) / 1000);
+      const body = String(output).trim();
+      const clean = body.length > 1500 ? body.slice(0, 1500) + `\n…（截断，共 ${body.length} 字）` : body;
+      await sendToQQ(key, `✅ ${secs}s\n${clean || '（没有输出）'}`);
+      log(`指令完成：${secs}s，${command.slice(0, 40)}`);
+    } catch (error) {
+      const msg = String(error?.message ?? error);
+      log(`指令失败：${msg}`);
+      // 会话可能坏了：下次重建
+      if (/超时|not found|404|gone|closed/i.test(msg)) forgetControlSession();
+      await sendToQQ(key, `❌ ${msg.slice(0, 300)}`);
+    } finally {
+      controlBusy = false;
+    }
   }
 
   async function runSlangExtraction(key) {
@@ -3745,7 +4191,12 @@ async function main() {
   // 官方接口 GET /user/balance 需要 API key：config.deepseekBalance.apiKey →
   // 环境变量 → DSH 的 .credentials.yaml。读不到时安静返回 null，不影响主链路。
   let lastBalanceSnapshot = null;
-  let lastBalanceNotifyAt = 0;
+  // 冷却时间要落盘：只放内存的话，桥接每重启一次（看门狗对齐端口、手动重拉）
+  // 都会当成「从没提醒过」，余额低的时候就会连着弹好几条。2026-11-16 修。
+  const BALANCE_NOTIFY_FILE = path.join(STATE_DIR, 'balance-notify.json');
+  let lastBalanceNotifyAt = (() => {
+    try { return Number(readJsonSafe(BALANCE_NOTIFY_FILE, {})?.at) || 0; } catch { return 0; }
+  })();
   async function fetchDeepseekBalance() {
     const bal = cfg.deepseekBalance ?? {};
     if (bal.enabled === false) return null;
@@ -3812,10 +4263,11 @@ async function main() {
     if (balCfg.enabled === false) return;
     const bal = await fetchDeepseekBalance();
     if (!bal) return;
-    const threshold = Number(balCfg.lowThreshold) || 5;
+    const threshold = Number(balCfg.lowThreshold) || 10;
     if (bal.total >= threshold) return;
-    // 1~2 块之间：可以说是真没底了，这时候报数字才有用（犹豫的话术留给别人）。
-    // 5~2 块：只暗示，不报价。
+    // 10 块以下：这只是「提前打个招呼」，不是病危通知。语气轻、短、带点俏皮，
+    // 不报数字，也不说「撑不住/没力气/反应慢」这种要死要活的话——那听着像在给人上压力。
+    // 2 块以下才是真紧张，那时候报数字才有用。
     const severe = bal.total < 2;
     const cooldownMs = severe
       ? 60 * 60 * 1000
@@ -3824,26 +4276,33 @@ async function main() {
     const owner = cfg.ownerQQ;
     if (!owner) return;
     lastBalanceNotifyAt = Date.now();
-    // 不报数字、不说"余额/token/钱"，只暗示「我最近不太撑得住」。
+    try { atomicWriteJson(BALANCE_NOTIFY_FILE, { at: lastBalanceNotifyAt, total: bal.total }); } catch {}
+    // 不提「余额/token/钱」，只用她自己的说法（饭/没吃饱/没劲）带一句。
     // 真正的金额写进日志和控制台，让主人自己去看，不进聊天。
     const hints = [
-      '我最近好像有点没力气，回话都变短了。',
-      '你有没有觉得我这两天反应慢了一点……',
-      '今天不太想说话。不是你的问题。',
-      '我可能得歇一阵子，别多想。',
-      '总觉得什么地方瘪下去了，说不上来。',
-      '你那边一切都还好吗？我这边有点撑不太住。'
+      '喏，提前说一声：我最近有点「饿」了，不急，你顺手记着就行。',
+      '小声讲一句——我的饭快见底了。别紧张，还够吃，先跟你报个备。',
+      '刚发现我最近吃得有点快。你哪天空了给我续一口？',
+      '打个岔：该给我加点饭了。没催你的意思，就是提一嘴。',
+      '我这两天有点没劲，可能是没吃饱。你要是路过就顺手补一下。'
     ];
     const severeHints = [
-      `我这边只剩 ${bal.total.toFixed(2)} 块了……可能撑不了多久。`,
-      `真的快见底了，只剩 ${bal.total.toFixed(2)} 块。`,
-      `${bal.total.toFixed(2)} 块，大概还能陪你聊几轮。`
+      `这回不绕弯子了：我这边只剩 ${bal.total.toFixed(2)} 块，有空补一下。`,
+      `老实说，${bal.total.toFixed(2)} 块。我不催你，但你懂的。`,
+      `${bal.total.toFixed(2)} 块，真快见底了。补一口？`
     ];
     const pool = severe ? severeHints : hints;
     const hint = pool[Math.floor(Math.random() * pool.length)];
     try {
       await sendToQQ(`private:${owner}`, hint);
-      log(`余额偏低（¥${bal.total.toFixed(2)}），已用${severe ? '报数' : '暗示'}方式提醒管理员`);
+      await sendToQQ(`private:${owner}`, hint);
+      // 同时推送到手机：你不在电脑前也得知道
+      void notifier.send({
+        title: severe ? '余额快见底了' : '余额提醒',
+        body: `DeepSeek 余额 ¥${bal.total.toFixed(2)}${severe ? '，随时可能停机' : '，该充值了'}`,
+        group: '账单'
+      });
+      log(`余额偏低（¥${bal.total.toFixed(2)}），已提醒主人（${severe ? '紧张档' : '提前打招呼'}）`);
     } catch (error) {
       log(`余额提醒发送失败：${error?.message ?? error}`);
     }
@@ -3917,6 +4376,29 @@ async function main() {
 
   // 冷漠效果：超过 N 小时没聊天，好感 -10（每个沉默周期最多扣一次，不重复扣）。
   const coldTimer = setInterval(() => { applyColdPenalty(); expireDiscipline(); }, 10 * 60 * 1000);
+  const memoryConsolidateTimer = setInterval(() => { maybeConsolidateMemories(); }, 30 * 60 * 1000);
+  const tokenRotateTimer = setInterval(() => { rotateTokenUsageIfNeeded(); }, 60 * 60 * 1000);
+  // 传感器断流告警：读数超过 15 分钟没更新就推一次手机（1 小时最多一条）
+  let lastSensorAlertAt = 0;
+  const sensorWatchTimer = setInterval(() => {
+    try {
+      if (!notifier.enabled) return;
+      const reading = readEnvironment();
+      if (!reading || !Number(reading.at)) return;
+      const ageMin = (Date.now() - Number(reading.at)) / 60000;
+      if (ageMin < 15) return;
+      if (Date.now() - lastSensorAlertAt < 60 * 60 * 1000) return;
+      lastSensorAlertAt = Date.now();
+      void notifier.send({
+        title: '传感器断了',
+        body: `已经 ${Math.round(ageMin)} 分钟没有读数（上次 ${new Date(Number(reading.at)).toTimeString().slice(0, 5)}）。检查板子供电和串口。`,
+        group: '设备'
+      });
+      log(`📵 传感器断流 ${Math.round(ageMin)} 分钟，已推送`);
+    } catch {}
+  }, 5 * 60 * 1000);
+  // 启动时补跑一次：关机几天再开，也能把积压的重复记忆整理掉（内部按天/按小时判断）
+  setTimeout(() => { maybeConsolidateMemories(); }, 20000);
   coldTimer.unref?.();
 
   // 峰时/谷时思考强度切换：变化时递增 epoch，让下一条消息重新 selectModel。
@@ -4229,6 +4711,118 @@ async function main() {
       } catch { return null; }
     })();
     const forgetJson = JSON.stringify(forget || {}).replace(/</g, '\\u003c');
+
+    // ── 他那边 · 最近 24 小时（温湿度曲线 + 有人/没人的色带） ──────────────
+    // 数据全部来自真实时间戳，图上每小时一格就是真实时间，不靠内存里的"现在"。
+    const envNow = (() => { try { return readEnvironment(); } catch { return null; } })();
+    const envRecent = (() => {
+      try { return recentSummary(readEnvironmentHistory(), { now: Date.now(), hours: 24, bucketMinutes: 30 }); } catch { return null; }
+    })();
+    const envSpark = (() => {
+      const sum = envRecent;
+      if (!sum || !Array.isArray(sum.buckets)) return '<div class="muted">还没有记录（板子插上后每 30 秒一条）</div>';
+      const pts = sum.buckets.map((b, i) => ({ ...b, i })).filter((b) => b.temp !== null);
+      if (pts.length < 2) return '<div class="muted">样本还太少，等一会儿再来看</div>';
+      const W = 720, H = 110, PAD = 8;
+      const lo = Math.min(...pts.map((b) => b.temp));
+      const hi = Math.max(...pts.map((b) => b.temp));
+      const span = Math.max(0.8, hi - lo);
+      const x = (i) => PAD + (W - PAD * 2) * (i / Math.max(1, sum.buckets.length - 1));
+      const y = (v) => PAD + (H - PAD * 2) * (1 - (v - lo) / span);
+      const line = pts.map((b, k) => `${k === 0 ? 'M' : 'L'}${x(b.i).toFixed(1)},${y(b.temp).toFixed(1)}`).join(' ');
+      const dot = pts.slice(-1)[0];
+      const barW = Math.max(2, (W - PAD * 2) / Math.max(1, sum.buckets.length) - 1);
+      const bars = sum.buckets.map((b, i) => (b.moving > 0
+        ? `<rect x="${x(i).toFixed(1)}" y="${H + 4}" width="${barW.toFixed(1)}" height="9" rx="2" fill="rgba(96,220,150,.85)"/>`
+        : '')).join('');
+      return `<svg viewBox="0 0 ${W} ${H + 18}" preserveAspectRatio="none" style="width:100%;height:190px;display:block;overflow:visible">
+        <path d="${line}" fill="none" stroke="#f0b47a" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+        <circle cx="${x(dot.i).toFixed(1)}" cy="${y(dot.temp).toFixed(1)}" r="3.5" fill="#f0b47a"/>
+        ${bars}</svg>`;
+    })();
+    // 数据断档：历史里两段之间超过 10 分钟就记一段（电脑睡眠、板子拔了、采集中断）
+    const envGaps = (() => {
+      try {
+        const rows = readEnvironmentHistory().filter((e) => Number(e.at) > 0).sort((a, b) => a.at - b.at);
+        const out = [];
+        const since = Date.now() - 24 * 3600 * 1000;
+        for (let i = 1; i < rows.length; i += 1) {
+          const gapMs = Number(rows[i].at) - Number(rows[i - 1].at);
+          if (gapMs >= 10 * 60000 && Number(rows[i].at) > since) {
+            out.push({ from: Number(rows[i - 1].at), to: Number(rows[i].at), minutes: Math.round(gapMs / 60000) });
+          }
+        }
+        return out.slice(-4);
+      } catch { return []; }
+    })();
+    const envGapHtml = envGaps.length
+      ? `<div class="muted small" style="margin:8px 0 0">断档 ${envGaps.length} 段：${envGaps.map((g) => {
+        const hh = (ts) => new Date(ts).toTimeString().slice(0, 5);
+        return `${hh(g.from)}→${hh(g.to)}（${g.minutes >= 60 ? (g.minutes / 60).toFixed(1) + ' 小时' : g.minutes + ' 分钟'}）`;
+      }).join('、')}</div>`
+      : '';
+    // ── 她的一天：把今天的发言按小时串起来，配一句"现在在干嘛" ──────────
+    const dayTimeline = (() => {
+      try {
+        const d = new Date();
+        const pad = (v) => String(v).padStart(2, '0');
+        const key = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        const file = path.join(STATE_DIR, 'transcripts', `${key}.jsonl`);
+        let rows = [];
+        try {
+          rows = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)
+            .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+            .filter((r) => r && r.me && String(r.x || '').trim());
+        } catch {}
+        const hh = (ts) => new Date(ts).toTimeString().slice(0, 5);
+        const buckets = new Map();
+        for (const r of rows) {
+          const hour = new Date(r.t).getHours();
+          if (!buckets.has(hour)) buckets.set(hour, []);
+          buckets.get(hour).push(r);
+        }
+        const items = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([hour, list]) => ({
+          hour,
+          at: hh(list[0].t),
+          count: list.length,
+          sample: String(list[0].x || '').slice(0, 40)
+        }));
+        return { key, count: rows.length, items };
+      } catch { return { key: '', count: 0, items: [] }; }
+    })();
+    const envOutdoor = (() => {
+      try {
+        const w = cfg.weather?.enabled === false ? null : weatherService.cache;
+        if (!w || !w.now) return '';
+        const n = w.now;
+        const diff = Number.isFinite(Number(envNow?.tempC)) ? Number(envNow.tempC) - Number(n.tempC) : null;
+        const bits = [`外面 ${Math.round(n.tempC)}°C（体感 ${Math.round(n.feelsC)}°C）、${n.desc}`];
+        if (w.today) bits.push(`今天 ${Math.round(w.today.minC)}~${Math.round(w.today.maxC)}°C`);
+        if (diff !== null && Math.abs(diff) >= 2) bits.push(`外面比屋里${diff > 0 ? '低' : '高'} ${Math.abs(Math.round(diff))} 度`);
+        const advice = (() => {
+          try { return require('node:module').createRequire ? '' : ''; } catch { return ''; }
+        })();
+        return `<div class="muted small" style="margin:2px 0 8px">${bits.join(' · ')}</div>`;
+      } catch { return ''; }
+    })();
+    const envCards = (() => {
+      const sum = envRecent;
+      if (!sum) return '';
+      const hh = (ts) => new Date(ts).toTimeString().slice(0, 5);
+      const pres = sum.presence && sum.presence.possiblyStuck
+        ? `<span style="color:#ef5b67">红外可能在常高：${sum.samples} 条里一次"没人"都没有（查供电/接线）</span>`
+        : sum.presence && sum.presence.hasData
+        ? (sum.presence.lastMotionAt
+          ? `最后一次有人在动 <b>${hh(sum.presence.lastMotionAt)}</b>${sum.presence.quietMinutes === 0 ? '（刚刚）' : `（${sum.presence.quietMinutes} 分钟前）`}`
+          : '这段时间<b>没感觉到有人动</b>')
+        : '（人体感应数据还没开始记）';
+      return `<div class="env-meta">
+        <span class="env-pill">温度 <b>${sum.temp.min}~${sum.temp.max}°C</b> · 平均 ${sum.temp.avg}°C</span>
+        <span class="env-pill">湿度 <b>${Math.round(sum.humidity.min)}~${Math.round(sum.humidity.max)}%</b> · 平均 ${Math.round(sum.humidity.avg)}%</span>
+        <span class="env-pill">${pres}</span>
+        <span class="env-pill muted">${sum.samples} 条读数 · ${hh(sum.from)} → ${hh(sum.to)}</span>
+      </div>`;
+    })();
     const biliList = bilis.map((b) => `<a class="bili" href="${escHtml(b.url)}" target="_blank" rel="noreferrer">
       <span class="bili-score">${b.score}</span><span>${escHtml(b.title)}<div class="muted small">${escHtml(b.up)}${b.rated ? ` · 我评 ${b.rated}/5` : ''}</div></span></a>`).join('') || '<div class="muted">今天还没刷</div>';
 
@@ -4243,6 +4837,10 @@ ${bootMarkup}
   <iframe id="starFrame" title="记忆星图"></iframe>
   <button id="starClose" type="button" title="回到面板（Esc）">返回控制终端 ↙</button>
 </div>
+<div id="herLayer" role="dialog" aria-modal="true" aria-label="她" aria-hidden="true">
+  <iframe id="herFrame" title="她" allow="clipboard-write"></iframe>
+  <button id="herClose" type="button" title="回到面板（Esc）">返回控制终端 ↙</button>
+</div>
 <div id="appShell">
 <div class="ambient" aria-hidden="true"><div class="ambient-img"></div><div class="ambient-horizon"></div><div class="ambient-bokeh"></div><div class="ambient-grain"></div><div class="ambient-veil"></div></div>
 <header><div class="nav-inner">
@@ -4252,6 +4850,7 @@ ${bootMarkup}
     <button type="button" id="replayBoot">重播开场</button>
     <button type="button" class="desktop-action" data-panel-action="/panel-exit">退出全屏</button>
     <button type="button" data-panel-action="/panel-close">关闭</button>
+    <button type="button" class="nav-her" onclick="openHer()">她 ✦</button>
     <button type="button" class="nav-primary" onclick="openStar()">记忆星图 ↗</button>
   </div>
 </div></header>
@@ -4260,7 +4859,7 @@ ${bootMarkup}
   <div class="hero-copy"><div class="eyebrow">YOUR WORLD, CONNECTED.</div>
     <h1 id="dashboardTitle">每一个瞬间，<br><span>都值得记住。</span></h1>
     <p class="hero-description">情绪的起伏。记忆的轨迹。与你相遇的人。<br>关于小鲸鱼的一切，在这里清晰呈现。</p>
-    <div class="hero-actions"><button type="button" class="button-primary" onclick="openStar()">探索记忆宇宙 <span aria-hidden="true">↗</span></button><span class="hero-note">${mem.length} 条记忆 · 持续生长</span></div>
+    <div class="hero-actions"><button type="button" class="button-primary" onclick="openStar()">探索记忆宇宙 <span aria-hidden="true">↗</span></button><button type="button" class="her-cta" onclick="openHer()" title="在面板里直接看她">见她 ✦</button><button type="button" id="deskToggleBtn" class="her-cta ghost" title="把她请到桌面上（透明小窗）">叫她出来</button><span class="hero-note">${mem.length} 条记忆 · 持续生长</span></div>
   </div>
   <div class="hero-art">
     <div class="portrait">
@@ -4292,6 +4891,19 @@ ${bootMarkup}
 </div>
 <div class="section-heading reveal"><div><h2>一眼，看见全貌。</h2><p>运行状态与生活轨迹，井然有序。</p></div><div class="section-controls"><button id="expAll" type="button">展开全部</button><button id="colAll" type="button">收起全部</button></div></div>
 <main id="systemOverview" aria-label="系统状态与记忆数据">
+  <section class="wide"><h2>他那边 · 最近 24 小时</h2>
+    <div class="muted small" style="margin-bottom:14px">${envNow ? `此刻 ${envNow.tempC}°C / ${Math.round(envNow.humidity)}%${envNow.motion === true ? ' · 有人在动' : envNow.motion === false ? ' · 没人动' : ''}` : '此刻没有读数（板子没插或采集器没跑）'}${envNow ? ` · 数据时间 ${new Date(envNow.at).toLocaleTimeString('zh-CN', { hour12: false })}` : ''}</div>
+    ${envOutdoor}
+    ${envCards}
+    <div style="margin-top:16px;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:14px 12px 10px;background:rgba(255,255,255,.02)">${envSpark}</div>
+    <div class="muted small" style="margin-top:10px">橙线 = 温度（每格 30 分钟）· 绿块 = 那半小时里有人在动 · 曲线末端就是你上次看到的位置</div>
+    ${envGapHtml}
+  </section>
+  <!-- 她的一天：今天说了什么，按小时串起来 -->
+  <section class="wide"><h2>她的一天 · 今天</h2>
+    <div class="muted small" style="margin:2px 0 10px">${dayTimeline.count > 0 ? `今天说了 ${dayTimeline.count} 句，分布在 ${dayTimeline.items.length} 个时段` : "今天还没说话（安静的姑娘）"}</div>
+    ${dayTimeline.items.length ? `<div>${dayTimeline.items.map((it) => `<div style="display:flex;gap:14px;padding:9px 2px;border-bottom:1px solid rgba(255,255,255,.06)"><span style="flex:0 0 52px;color:#8b95aa">${it.at}</span><span style="flex:0 0 64px;color:#c9d3e6">${it.count} 句</span><span style="flex:1;color:#dfe6f2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(it.sample)}</span></div>`).join("")}</div>` : ""}
+  </section>
   <section><h2>服务状态</h2>${svc}</section>
   <section><h2>记忆结构</h2>${memBar}<div class="legend"><span><b style="background:#d7b698"></b>核心 ${core}</span><span><b style="background:#9db8da"></b>长期 ${long}</span><span><b style="background:#90b8ad"></b>短期 ${short}</span></div><div class="muted small" style="margin-top:24px">短期记忆 · 最近 ${Math.min(4, short)} 条</div><ul class="mini">${mem.filter((e) => normalizeTier(e.tier) === 'short').slice(-4).map((e) => `<li>${escHtml(e.text).slice(0, 60)}</li>`).join('') || '<li class="muted">暂无短期记忆</li>'}</ul></section>
   <section class="wide"><h2>压力与状态</h2><div class="moodgrid">${stressGauges}</div></section>
@@ -4310,7 +4922,7 @@ ${bootMarkup}
       <button type="button" class="button-primary" style="margin-top:22px" onclick="openStar()">在星图里拨动时间流 <span aria-hidden="true">↗</span></button></div>
     <div><div class="forget-chart"><canvas id="forgetChart" role="img" aria-label="未来 60 天各层级记忆平均保持率曲线"></canvas></div>
       <div class="forget-legend"><span><i style="background:#f0c8a4"></i>核心</span><span><i style="background:#9fb8da"></i>长期</span><span><i style="background:#8fd0c4"></i>短期</span></div>
-      <div class="forget-note">R(t) = e<sup>−t/S</sup>，S 由层级、被强化的次数与联想数决定。</div></div>
+      <div class="forget-note">R(t) = e<sup>−t/S</sup>；短期用拉伸指数 e<sup>−3(t/TTL)<sup>1.8</sup></sup>，前段淡得慢、临到期才散。</div></div>
     <script type="application/json" id="forgetData">${forgetJson}</script>
   </div></section>
   <section class="wide"><h2>对话回放</h2>
@@ -4329,6 +4941,55 @@ ${bootMarkup}
 <footer><strong>DEEPSEEK · PERSONAL INTELLIGENCE</strong><span>生成于 ${now.toLocaleString('zh-CN', { hour12: false })} · 运行 ${Math.round(process.uptime() / 60)} 分钟</span></footer>
 </div></div>
 <script>${dashboardScript}${sceneScript}${personalityScript}${replayScript}${bootScript}${handoffScript}</script>
+<script>
+(function(){
+  var layer=document.getElementById('herLayer'),frame=document.getElementById('herFrame'),close=document.getElementById('herClose'),back=null,unload=0;
+  if(!layer||!frame)return;layer.inert=true;
+  window.openHer=function(){
+    clearTimeout(unload);back=document.activeElement;
+    var p=new URLSearchParams(location.search);p.set('embed','1');p.delete('intro');
+    if(!frame.getAttribute('src')||frame.getAttribute('src')==='about:blank')frame.src='/her?'+p.toString();
+    try{ if(frame.contentWindow) frame.contentWindow.postMessage('her-show','*'); }catch(e){}
+    layer.inert=false;layer.setAttribute('aria-hidden','false');layer.classList.add('on');
+    document.body.classList.add('her-open');document.getElementById('appShell').inert=true;close.focus();
+  };
+  window.closeHer=function(){
+    layer.classList.remove('on');layer.inert=true;layer.setAttribute('aria-hidden','true');
+    document.body.classList.remove('her-open');document.getElementById('appShell').inert=false;
+    if(back)back.focus();
+    // 收起来了就让它立刻停帧：之前要等 40 秒卸载，那段时间它还在满帧画，面板就是这时候卡的
+    try{ if(frame.contentWindow) frame.contentWindow.postMessage('her-hide','*'); }catch(e){}
+    // 关掉 12 秒没再打开就卸掉 Live2D：模型 5 张贴图解码后接近 600MB 显存，
+    // 只要 iframe 还活着这份显存就一直被占着（就算停帧也一样）。
+    unload=setTimeout(function(){if(!layer.classList.contains('on'))frame.src='about:blank';},12000);
+  };
+  close.addEventListener('click',window.closeHer);
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&layer.classList.contains('on')){e.preventDefault();window.closeHer();}});
+  if(location.hash==='#her')setTimeout(window.openHer,600);
+})();
+</script>
+<script>
+// 她在自己那个窗口里（不嵌页面）：这里只放一个开关
+(function () {
+  const btn = document.getElementById('deskToggleBtn');
+  if (!btn) return;
+  const sync = async function () {
+    try {
+      const r = await fetch('/desk/status', { cache: 'no-store' });
+      const j = await r.json();
+      btn.dataset.running = j.running ? '1' : '';
+      btn.textContent = j.running ? '收起她' : '叫她出来';
+    } catch (e) { /* 桥接没响应就保持原样 */ }
+  };
+  btn.addEventListener('click', async function () {
+    btn.disabled = true;
+    try { await fetch('/desk/toggle', { cache: 'no-store' }); } catch (e) {}
+    setTimeout(async function () { await sync(); btn.disabled = false; }, 1200);
+  });
+  sync();
+  setInterval(sync, 8000);
+})();
+</script>
 </body></html>`;
   }
 
@@ -4818,8 +5479,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         const parsed = normalizeReading(raw);
         if (!parsed.ok) { send({ ok: false, error: parsed.error }, 400); return; }
         const reading = { ...parsed.reading, ip: String(req.socket?.remoteAddress ?? '').replace(/^::ffff:/, '') };
-        // 人体感应事件化：只记「安静一阵后突然有人动」的那一刻（细节在 environment.js 的 notePresenceEvent）。
-        // 人坐在桌前手一直在动，原始 motionAgo 永远是 1；提示词只认 presenceEventAt，不会整天念"有人走过"。
+        // 人体感应事件化：只记「安静一阵后突然有人动」的那一刻。
+        // 细节在 environment.js 的 notePresenceEvent（人坐在桌前手一直在动，原始 motionAgo 永远是 1）。
         try { notePresenceEvent(readEnvironment(), reading, Date.now()); } catch {}
         try {
           atomicWriteJson(ENV_FILE, reading);
@@ -4838,6 +5499,61 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     });
     server.unref?.();
     return server;
+  }
+
+  // ── 网页群入口（独立端口，不经过控制台的鉴权链） ──────────────────────
+  // 只开一个 POST /incoming：网页里的人说了一句话，交给 handleIncoming，
+  // 当成那个"假群"里的一条普通群消息。跟 QQ 收到消息走的是同一条路。
+  function startWebchatEndpoint() {
+    const wc = cfg.webchat;
+    if (!wc?.enabled) return;
+    const port = Number(wc.inboundPort || 3102);
+    const secret = String(wc.token ?? '');
+    if (!secret) { log('⚠️  webchat: 没有配 token，网页入口不启动'); return; }
+    const srv = http.createServer(async (req, res) => {
+      const send = (code, obj) => {
+        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      };
+      try {
+        const url = new URL(req.url, 'http://127.0.0.1');
+        if (req.method !== 'POST' || url.pathname !== '/incoming') return send(404, { ok: false, error: 'not found' });
+        if (String(req.headers['x-webchat-token'] ?? '') !== secret) return send(401, { ok: false, error: 'unauthorized' });
+        const chunks = [];
+        let size = 0;
+        for await (const c of req) {
+          size += c.length;
+          if (size > 65536) return send(413, { ok: false, error: 'body too large' });
+          chunks.push(c);
+        }
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { body = {}; }
+        const gid = Number(body.groupId ?? (wc.groups ?? [])[0]);
+        const uid = Number(body.uid) || 0;
+        const nick = String(body.nick ?? uid).slice(0, 32);
+        const text = String(body.text ?? '').slice(0, 2000);
+        if (!gid || !text) return send(400, { ok: false, error: 'group 或 text 为空' });
+        const ev = {
+          post_type: 'message',
+          message_type: 'group',
+          group_id: gid,
+          user_id: uid,
+          self_id: Number(cfg.selfQQ ?? cfg.ownerQQ ?? 0) || 0,
+          message_id: Number(body.messageId) || (Date.now() % 1000000000),
+          time: Math.floor(Date.now() / 1000),
+          sender: { user_id: uid, nickname: nick, card: nick },
+          message: [{ type: 'text', data: { text } }],
+          raw_message: text,
+        };
+        await handleIncoming('group', gid, ev, cfg);
+        send(200, { ok: true });
+      } catch (e) {
+        log('网页群收消息出错:', e?.message ?? e);
+        try { send(500, { ok: false, error: String(e?.message ?? e) }); } catch {}
+      }
+    });
+    srv.listen(port, '127.0.0.1', () => log(`网页群入口已启动： http://127.0.0.1:${port}/incoming（假群号 ${(wc.groups ?? []).join(',')}）`));
+    srv.on('error', (e) => log('网页群入口启动失败:', e?.message ?? e));
   }
 
   function startConsoleServer() {
@@ -5017,7 +5733,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
       // /api/boot/card 是开机片头读的一张只读小卡（记忆数/心情/压力/最在意），
       // 由 DSH 的插件在宿主进程里来取；它跑在另一个进程里，拿不到控制台令牌。
       // 内容只在本机回环可读，且不含 QQ 号，所以放进免令牌白名单。
-      const publicMedia = (req.method === 'GET' && (url.pathname.startsWith('/media/') || url.pathname === '/panel' || url.pathname === '/open-panel' || url.pathname === '/ping' || url.pathname === '/diag' || url.pathname === '/open-memory'
+      const publicMedia = (req.method === 'GET' && (url.pathname.startsWith('/media/') || url.pathname === '/panel' || url.pathname === '/open-panel' || url.pathname === '/ping' || url.pathname === '/diag' || url.pathname === '/desk/status' || url.pathname === '/desk/toggle' || url.pathname === '/open-memory'
           || url.pathname === '/open-space'
           || url.pathname === '/open-stickers'
           || url.pathname === '/panel-exit' || url.pathname === '/panel-close' || url.pathname === '/api/boot/card'))
@@ -5171,6 +5887,57 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             'Referrer-Policy': 'no-referrer'
           });
           res.end(buildDashboardFancy());
+          return;
+        }
+        // ── 「她」的舞台页（/her）：Live2D 直接在面板里演；和桌面小窗同模型 ──
+        if (req.method === 'GET' && (url.pathname === '/her' || url.pathname === '/her/')) {
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store',
+            'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; connect-src 'self' data: blob:; media-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; frame-ancestors *",
+            'X-Content-Type-Options': 'nosniff',
+            'Referrer-Policy': 'no-referrer'
+          });
+          res.end(renderHerPage());
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/her/state') {
+          const ownerKey = String(cfg.ownerKey || ('private:' + (cfg.ownerQQ || cfg.owner || '')));
+          let mood = '';
+          try { const m = getMood(ownerKey) || getMood('private:' + String(cfg.ownerQQ || '')); mood = (m && m.emotion) || ''; } catch {}
+          sendJson({ ok: true, mood, deskRunning: deskWindowPid() > 0, stickers: selfieStore.list().length });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/her/desk') {
+          // 舞台 ⇄ 桌面交接：open = 叫桌面窗出来，close = 收起来。只认这两个动作。
+          const action = String(url.searchParams.get('action') || '');
+          try {
+            const pid = deskWindowPid();
+            if (action === 'open' && !pid) deskWindowStart();
+            else if (action === 'close' && pid) deskWindowStop(pid);
+            else if (action !== 'open' && action !== 'close') { sendJson({ ok: false, error: 'action 只能是 open / close' }, 400); return; }
+            sendJson({ ok: true, deskRunning: deskWindowPid() > 0 || (action === 'open') });
+          } catch (error) { sendJson({ ok: false, error: String(error?.message ?? error) }, 500); }
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/her/stickers') {
+          sendJson({ ok: true, items: selfieStore.list() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/her/stickers') {
+          try {
+            const body = await readBody();
+            const it = selfieStore.saveUpload(body.png, body.expression);
+            sendJson({ ok: !!it, item: it });
+          } catch (error) { sendJson({ ok: false, error: String(error?.message ?? error) }, 400); }
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/her/sticker') {
+          const f = selfieStore.fileOf(String(url.searchParams.get('name') || ''));
+          if (!f) { sendJson({ ok: false, error: 'not found' }, 404); return; }
+          const buf = fs.readFileSync(f);
+          res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'private, max-age=3600', 'content-length': buf.length });
+          res.end(buf);
           return;
         }
         // ── 形象绑定预览（/avatar）：伪 Live2D 引擎，素材到位后自动切素材模式 ──
@@ -5407,6 +6174,85 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           }
           return;
         }
+        // 网页群：有人在网页里说话 → 当成这个"假群"里的一条普通群消息，
+        // 原样走 handleIncoming（记忆、好感、唤醒规则全都一样）。
+        if (req.method === 'POST' && url.pathname === '/api/webchat/incoming') {
+          const secret = String(cfg.webchat?.token ?? '');
+          if (!secret || String(req.headers['x-webchat-token'] ?? '') !== secret) {
+            sendJson({ ok: false, error: 'unauthorized' }, 401);
+            return;
+          }
+          const chunks = [];
+          let size = 0;
+          for await (const c of req) {
+            size += c.length;
+            if (size > 65536) { sendJson({ ok: false, error: 'body too large' }, 413); return; }
+            chunks.push(c);
+          }
+          let body = {};
+          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { body = {}; }
+          const gid = Number(body.groupId ?? (cfg.webchat?.groups ?? [])[0]);
+          const uid = Number(body.uid) || 0;
+          const nick = String(body.nick ?? uid).slice(0, 32);
+          const text = String(body.text ?? '').slice(0, 2000);
+          if (!gid || !text) { sendJson({ ok: false, error: 'group 或 text 为空' }, 400); return; }
+          const ev = {
+            post_type: 'message',
+            message_type: 'group',
+            group_id: gid,
+            user_id: uid,
+            self_id: Number(cfg.selfQQ ?? cfg.ownerQQ ?? 0) || 0,
+            message_id: Number(body.messageId) || (Date.now() % 1000000000),
+            time: Math.floor(Date.now() / 1000),
+            sender: { user_id: uid, nickname: nick, card: nick },
+            message: [{ type: 'text', data: { text } }],
+            raw_message: text,
+          };
+          try {
+            await handleIncoming('group', gid, ev, cfg);
+            sendJson({ ok: true });
+          } catch (e) {
+            log('网页群收消息出错:', e?.message ?? e);
+            sendJson({ ok: false, error: String(e?.message ?? e) }, 500);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/notify') {
+          try {
+            const body = await readBody();
+            const result = await notifier.send({
+              title: String(body.title || '小鲸鱼'),
+              body: String(body.body || '这是一条测试推送'),
+              group: String(body.group || ''),
+              sound: String(body.sound || ''),
+              url: String(body.url || ''),
+              level: String(body.level || 'active')
+            });
+            sendJson({ ok: result.ok, result }, result.ok ? 200 : 502);
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/notify/morning') {
+          try {
+            const force = url.searchParams.get('force') === '1';
+            const result = await sendMorningReport({ force });
+            sendJson({ ok: !!result?.ok, result });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/weather') {
+          try {
+            const data = await weatherService.get();
+            sendJson({ ok: !!data, weather: data || null, error: data ? null : (weatherService.lastError || '拿不到天气') });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/status') {
           const rs = readRoleState();
           // 带 agent token 的调用来自 QQ 群里的 AI：只能拿到它自己该知道的运行状态。
@@ -5429,6 +6275,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           sendJson({
             mode: currentMode,
             closedAgentPreset,
+            // 让 doctor / 面板读到"桥接实际连的 DSH 地址"（config 里的可能已过时）
+            dsh: { baseUrl: String(cfg.dsh?.baseUrl || ''), ready: dshReady },
             role: rs.role ?? null,
             roleMode: rs.mode ?? 'active',
             dshReady,
@@ -5442,7 +6290,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             // 各会话的上下文占用（≈最近一条 assistant 消息的总输入 token）
             context: Object.entries(state.sessions || {}).map(([k, sid]) => {
               const used = Number(sessionContextTokens.get(sid)) || 0;
-              const win = Number(cfg.socialV2?.contextGuard?.contextWindow) || 1_000_000;
+              // 百分比按「硬线」算：分母是 30 万，100% 就等于「该由系统压缩了」。
+              const win = Number(cfg.socialV2?.contextGuard?.hardThreshold) || 300_000;
               return { key: k, sessionId: sid, usedTokens: used, percent: Math.round((used / win) * 1000) / 10 };
             }),
             activity: readActivityTail(100)
@@ -6569,7 +7418,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
           }
           // tools：只接受布尔开关
-          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'remember', 'recall', 'forget', 'newSession', 'balance', 'groupFiles', 'mood', 'affinity', 'bili', 'groupScores', 'impression', 'handover', 'events', 'transcript', 'say', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendVoice'];
+          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'remember', 'recall', 'forget', 'newSession', 'balance', 'groupFiles', 'mood', 'affinity', 'bili', 'groupScores', 'impression', 'handover', 'events', 'transcript', 'say', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendSelfie', 'sendVoice'];
           if (body.tools && typeof body.tools === 'object') {
             merged.tools = { ...(current.tools ?? {}), ...body.tools };
             for (const k of toolFlags) {
@@ -6846,6 +7695,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             stickerNote: 'qq_sticker_note',
             collectSticker: 'qq_collect_sticker',
             getSelfImage: 'qq_get_self_image',
+            sendSelfie: 'qq_send_selfie',
             sendVoice: 'qq_send_voice / qq_list_voices'
           };
           const tools = cfg.socialV2?.tools ?? {};
@@ -6968,6 +7818,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             ageMs: reading ? readingAgeMs(reading) : null,
             stale: reading ? !isFresh(reading, { staleMinutes: Number(envCfg.staleMinutes) || DEFAULT_STALE_MINUTES }) : true,
             trend: reading ? summarizeHistory(readEnvironmentHistory(), { hours }) : null,
+            recent: (() => { try { const s = recentSummary(readEnvironmentHistory(), { hours: Math.min(24, hours), bucketMinutes: 30 }); return s ? { ...s, say: recentLine(s) } : null; } catch { return null; } })(),
+            outdoor: (() => { try { const w = weatherService.cache; return w ? { ...w, line: outdoorLine(w, reading) } : null; } catch { return null; } })(),
             hint: reading
               ? '缝还亮着：这是他那边的空气。当他的天气说——「你那边今天挺潮的」「你那边是不是有点凉」；别报「湿度 58%」这种读数，也别解释魔法怎么运作。'
               : '缝起了雾，现在看不见他那边（设备没接上或没上报）；没看见就别编。'
@@ -8054,6 +8906,38 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         // ── 诊断（「对接」按钮等超过 35 秒时来问一句：到底哪里没开）───────────
         // 只读，允许跨域：页面在 DSH 的端口上，不加 CORS 就读不到这个 JSON。
         // 这里只说「该怎么办」，不返回任何凭据/路径。
+        if (req.method === 'GET' && (url.pathname === '/desk/status' || url.pathname === '/desk/toggle')) {
+          // 桌面上的她：DSH 里那个「🐋 她」按钮打的就是这里。
+          // 只用「进程在不在」判断，不依赖谁启动的（cmd 手动开的也算）。
+          const corsJson = (obj) => {
+            res.writeHead(200, {
+              'content-type': 'application/json; charset=utf-8',
+              'access-control-allow-origin': '*',
+              'cache-control': 'no-store'
+            });
+            res.end(JSON.stringify(obj));
+          };
+          try {
+            const running = deskWindowPid();
+            if (url.pathname === '/desk/status') {
+              corsJson({ ok: true, running: running > 0, pid: running });
+              return;
+            }
+            if (running > 0) {
+              deskWindowStop(running);
+              log(`[desk] 收起桌面窗（PID ${running}）`);
+              corsJson({ ok: true, running: false, action: 'closed' });
+            } else {
+              const pid = deskWindowStart();
+              log(`[desk] 叫出桌面窗（PID ${pid || '?'}）`);
+              corsJson({ ok: !!pid, running: !!pid, action: 'opened', pid });
+            }
+          } catch (error) {
+            log('[desk] 开关失败：' + (error?.message ?? error));
+            corsJson({ ok: false, error: String(error?.message ?? error) });
+          }
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/diag') {
           try {
             const [snow, ob1, ob2] = await Promise.all([tcpPortOpen(5099), tcpPortOpen(3000), tcpPortOpen(3001)]);
@@ -8398,6 +9282,60 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             saveSocialV2State();
             log(`[sticker] 工具发送表情失败 ${key}: ${error?.message ?? error}`);
             sendJson({ ok: false, error: `发送表情失败：${error?.message ?? error}` }, 500);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/send-selfie') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('sendSelfie')) { sendJson({ ok: false, error: '工具未启用：qq_send_selfie' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
+          const keyMatch = /^(group|private):(\d+)$/.exec(key);
+          if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
+          const kind = keyMatch[1];
+          const id = Number(keyMatch[2]);
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (kind === 'private' && body.atUserId) { sendJson({ ok: false, error: '私聊不需要 @' }, 400); return; }
+          if (shouldBlockSilentReply(key)) { sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403); return; }
+          let actualReplyTo = body.replyToMessageId;
+          if (actualReplyTo !== undefined && actualReplyTo !== null && String(actualReplyTo).trim() !== '') {
+            if (!/^-?[1-9]\d*$/.test(String(actualReplyTo).trim())) { sendJson({ ok: false, error: 'replyToMessageId 必须是非零整数（消息 id 可能为负数）' }, 400); return; }
+            const resolved = await resolveReplyTargetV2(getSocialV2State(key), kind, id, String(actualReplyTo).trim());
+            if (!resolved) { sendJson({ ok: false, error: '无法解析被引用消息，请确认 message id 正确且属于当前会话' }, 400); return; }
+            actualReplyTo = resolved.messageId;
+          }
+          const sendCfg = cfg.socialV2?.send ?? {};
+          const now = Date.now();
+          try {
+            const st = getSocialV2State(key);
+            const maxPerMinute = Number(sendCfg.maxSendPerMinute) || 0;
+            const recentMinute = (st.sendTimes || []).filter((t) => now - t < 60000).length;
+            if (maxPerMinute > 0 && recentMinute + 1 > maxPerMinute) { sendJson({ ok: false, error: '发送频率超限，请稍后再试' }, 429); return; }
+            // 没指定表情就用她此刻的心情：「现在是生气」就拍生气的样子
+            const moodNow = getMood(key);
+            const expr = String(body.expression ?? '').trim() || (moodNow && moodNow.emotion) || '';
+            const sent = await sendSelfieV2(key, { expr, framing: body.framing, replyToMessageId: actualReplyTo, atUserId: body.atUserId ?? null });
+            st.sendTimes.push(now);
+            const text = `[自拍:${sent.expression}]`;
+            st.recentMessages.push({
+              messageId: sent.messageId ? String(sent.messageId) : null, sender: '我', text, plain: text, quoteTargetIsSelf: false, isOwner: true, ownerLabel: '我',
+              isSelf: true, media: [], hasMedia: false, forwardIds: [], hasForward: false, time: Date.now()
+            });
+            const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
+            if (st.recentMessages.length > recentLimit) st.recentMessages.splice(0, st.recentMessages.length - recentLimit);
+            st.lastAiReplyAt = now; st.lastActionAt = now; st.wakeConfig.noActionCount = 0;
+            saveSocialV2State();
+            scheduleReplyCheckV2(key);
+            log(`[selfie] 发送自拍 ${key}: ${sent.expression}`);
+            appendActivity(`${key} [selfie] 发送自拍：${sent.expression}`);
+            sendJson({ ok: true, key, expression: sent.expression, sent: 1, reused: !!sent.reused, size: sent.width ? sent.width + 'x' + sent.height : undefined, messageId: sent.messageId });
+          } catch (error) {
+            log(`[selfie] 发送自拍失败 ${key}: ${error?.message ?? error}`);
+            sendJson({ ok: false, error: `发送自拍失败：${error?.message ?? error}` }, 500);
           }
           return;
         }
@@ -9383,7 +10321,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           sendJson({
             ok: true,
             balance: bal,
-            threshold: Number(cfg.deepseekBalance?.lowThreshold) || 5,
+            threshold: Number(cfg.deepseekBalance?.lowThreshold) || 10,
             note: bal ? null : '读不到余额（没有可用 API key，或接口暂时失败）'
           });
           return;
@@ -10386,7 +11324,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         '1) 用 qq_recall 翻一遍最近的记忆（可按 tier=core / long / short 分别看）；',
         '2) 昨天的短期记忆里还有用的，升级成长期（qq_remember 带 tier="long"），特别重要的升级成核心（tier="core"）；',
         '3) 过时、记错、重复的用 qq_forget 删掉；',
-        '4) 短期记忆默认 3 天自动过期，不用手动清。',
+        `4) 短期记忆默认 ${shortTtlDays()} 天自动过期，不用手动清。`,
         '整理完用 qq_mark_read 或 qq_set_wake_config 收尾，不要发言、不要解释。'
       ].join('\n');
     };
@@ -10451,38 +11389,75 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     }, 10 * 60 * 1000);
     memoryReviewTimer.unref?.();
 
-    // ── 上下文满度守护：到阈值就提醒 AI 自己交接换会话 ────────────────────────
-    // 依据：最近一条 assistant/message 的 usage 总输入 ≈ 当前上下文大小。
-    // 触发后走「后台提醒」通道，让 AI 自己写摘要 + qq_new_session；桥接不替它总结。
-    const CONTEXT_GUARD_TEXT = (pct, used, win) => [
-      `【上下文提醒】这条会话的上下文已用到约 ${pct}%（${used} / ${win} tokens）。`,
-      '请按顺序做：1) 用 qq_recall 回顾记忆；2) 把这段对话的要点、约定、还没完成的事写成摘要；',
-      '3) 调用 qq_new_session(summary=...) 交接换新会话（摘要会写进长期记忆，新会话能读到）。',
-      '这是内部整理：不要发言、不要解释；处理完用 qq_mark_read 收尾。'
+    // ── 上下文满度守护：分两档，把"要不要换会话"的选择权交给她自己 ──────────────
+    // 软档（20 万）：提醒她可以二选一——想清爽就交接换会话，聊得顺就什么都不做。
+    // 硬档（30 万）：不再逼她，靠 DSH 自己的压缩（dsh-compaction-basic，
+    //   profile 里 thresholdRatio=0.3）在下次请求前把旧历史压成摘要。
+    // 以前是单档、只喊"交接"，等于不管她聊得正顺不顺都逼她重开——这才是她老说
+    // "一直在读/一直在聊同一件事"的来源之一。
+    const CONTEXT_GUARD_TEXT = (used, soft, hard) => [
+      `【上下文】这条会话已经用掉约 ${Math.round(used / 1000)}k token（软线 ${Math.round(soft / 1000)}k，硬线 ${Math.round(hard / 1000)}k）。`,
+      '接下来怎么走你自己挑，选一个就行：',
+      `1) 想换个清爽的新会话：先用 qq_recall 回顾记忆，把这段的要点/约定/没做完的事写成摘要，再调 qq_new_session(summary=...)。记忆不会丢，丢的只是中间的思考过程。`,
+      `2) 觉得现在聊得正顺、不想被打断：什么都不用做。到 ${Math.round(hard / 1000)}k 系统会自动压缩上下文（保留最近的对话，把更早的压成摘要），你会少记一些细节，但不会断。`,
+      '这是内部整理：不要发言、不要跟人解释这条消息。处理完用 qq_mark_read 收尾。'
     ].join('\n');
+    const contextHardSeen = new Map(); // key -> 上次因为"已过硬档"打日志的时间
     const contextGuardTimer = setInterval(() => {
       void (async () => {
         try {
           const g = cfg.socialV2?.contextGuard ?? {};
           if (g.enabled === false) return;
           if (!dshReady) return;
-          const threshold = Number(g.threshold) || 0.8;
-          const win = Number(g.contextWindow) || 1_000_000;
-          const cooldown = Number(g.cooldownMs) || 30 * 60 * 1000;
+          const soft = Number(g.softThreshold) || 200_000;
+          const hard = Math.max(soft, Number(g.hardThreshold) || 300_000);
+          const cooldown = Number(g.cooldownMs) || 4 * 3600 * 1000;
           for (const [key, sessionId] of Object.entries(state.sessions || {})) {
             const used = Number(sessionContextTokens.get(sessionId)) || 0;
-            if (!used || used < threshold * win) continue;
+            if (!used) continue;
+            if (used >= hard) {
+              // 过硬档就交给系统压缩，桥接这里只留个痕迹，别打扰她。
+              // 但万一下次请求没压下去（配置没热加载 / 压缩后端报错），上下文会一直涨；
+              // 涨到硬线 1.5 倍还没压，就退回「请她交接」的老路子，至少不会无限涨。
+              if (used < hard * 1.5) {
+                const lastHard = Number(contextHardSeen.get(key)) || 0;
+                if (Date.now() - lastHard > 60 * 60 * 1000) {
+                  contextHardSeen.set(key, Date.now());
+                  log(`上下文 ${Math.round(used / 1000)}k 已过硬档（${key}）→ 交给系统压缩`);
+                }
+                continue;
+              }
+              const last = Number(contextGuardTimes.get(key)) || 0;
+              if (Date.now() - last < 2 * 3600 * 1000) continue;
+              contextGuardTimes.set(key, Date.now());
+              try {
+                const res = await fetch(`http://127.0.0.1:${port}/api/console/notify-ai`, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', 'x-console-token': consoleToken },
+                  body: JSON.stringify({
+                    key,
+                    message: [
+                      `【上下文】这条会话已经涨到 ${Math.round(used / 1000)}k token，超过硬线（${Math.round(hard / 1000)}k）却还没被系统压缩——压缩可能没生效。`,
+                      '现在请按顺序做：1) qq_recall 回顾记忆；2) 把要点/约定/没做完的事写成摘要；3) qq_new_session(summary=...) 交接换新会话。',
+                      '这是内部整理：不要发言、不要跟人解释。处理完用 qq_mark_read 收尾。'
+                    ].join('\n')
+                  })
+                });
+                if (res.ok) log(`上下文 ${Math.round(used / 1000)}k 压在硬线上没下去（${key}）→ 已请她交接`);
+              } catch {}
+              continue;
+            }
+            if (used < soft) continue;
             const last = Number(contextGuardTimes.get(key)) || 0;
             if (Date.now() - last < cooldown) continue;
             contextGuardTimes.set(key, Date.now());
-            const pct = Math.round((used / win) * 100);
             try {
               const res = await fetch(`http://127.0.0.1:${port}/api/console/notify-ai`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json', 'x-console-token': consoleToken },
-                body: JSON.stringify({ key, message: CONTEXT_GUARD_TEXT(pct, used, win) })
+                body: JSON.stringify({ key, message: CONTEXT_GUARD_TEXT(used, soft, hard) })
               });
-              if (res.ok) log(`上下文已用 ${pct}%（${key}）→ 已提醒它自己交接`);
+              if (res.ok) log(`上下文 ${Math.round(used / 1000)}k（${key}）→ 已把「交接 / 继续聊」的选择告诉她`);
             } catch {}
           }
         } catch (error) {
@@ -10753,7 +11728,51 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
   }
 
 
+  // ── 网页群出口 ────────────────────────────────────────────────────────
+  // 网页群在配置里就是一个「假群号」（cfg.webchat.groups）。它跟真群走完全相同的
+  // 处理链（记忆、好感、唤醒、表情都在同一套里），只在最后一步把消息投到网页服务，
+  // 而不是 OneBot。这样她在两边是同一个她，不是两份。
+  function isWebGroup(id) {
+    const list = cfg.webchat?.groups ?? [];
+    return list.some((g) => String(g) === String(id));
+  }
+
+  // 真群走 SnowLuma；网页群走我们自己模拟的 OneBot 端点（/onebot/<token>/<action>）。
+  // 这样表情、语音、图片这些"直接调 OneBot"的路径一行都不用改，只是把地址换掉。
+  function onebotHttpBaseFor(id) {
+    const port = Number(cfg.webchat?.inboundPort || 3102);
+    const token = String(cfg.webchat?.token ?? '');
+    if (id != null && isWebGroup(id) && token) { const base = String(cfg.webchat?.baseUrl || 'http://127.0.0.1:3300').replace(/\/+$/, ''); return base + '/onebot/' + token; }
+    return String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+  }
+
+  // 只拿到 key 的时候用这个（发送函数都收 key，不单独收 id）
+  function onebotHttpBaseForKey(key) {
+    const parts = String(key || '').split(':');
+    return onebotHttpBaseFor(parts.length > 1 ? parts[1] : '');
+  }
+
+  async function webchatDeliver(id, text, { replyToMessageId = null, atUserId = null } = {}) {
+    const base = String(cfg.webchat?.baseUrl || 'http://127.0.0.1:3300').replace(/\/+$/, '');
+    const res = await fetch(`${base}/api/her-message`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cfg.webchat?.token ? { 'x-webchat-token': cfg.webchat.token } : {}),
+      },
+      body: JSON.stringify({ groupId: String(id), text: String(text ?? ''), replyToMessageId, atUserId }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`网页群投递失败: ${body.error || res.status}`);
+    return { message_id: body.id ?? null };
+  }
+
   async function onebotSend(kind, id, message, replyToMessageId, atUserId = null) {
+    // 网页群：不走 OneBot，改成投到网页服务
+    if (kind === 'group' && isWebGroup(id)) {
+      return await webchatDeliver(id, message, { replyToMessageId, atUserId });
+    }
     const segments = [];
     if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
       const rid = String(replyToMessageId).trim();
@@ -12332,9 +13351,179 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     }
   }
 
+  // ── 账本轮转：token-usage.jsonl 只增不减，久了会到几十 MB ──
+  // 超过 8MB 就留最近 2 万行，旧的压进 .1（再大就覆盖）。
+  let lastTokenRotateAt = 0;
+  function rotateTokenUsageIfNeeded() {
+    try {
+      if (Date.now() - lastTokenRotateAt < 3600 * 1000) return;
+      lastTokenRotateAt = Date.now();
+      const st = fs.statSync(TOKEN_USAGE_FILE);
+      if (st.size <= 8 * 1024 * 1024) return;
+      const lines = fs.readFileSync(TOKEN_USAGE_FILE, 'utf8').split('\n').filter(Boolean);
+      const kept = lines.slice(-20000);
+      try { fs.renameSync(TOKEN_USAGE_FILE, TOKEN_USAGE_FILE + '.1'); } catch {}
+      atomicWriteText(TOKEN_USAGE_FILE, kept.join('\n') + '\n');
+      log(`🧾 账本轮转：${lines.length} → ${kept.length} 行（旧文件已保留为 .1）`);
+    } catch {}
+  }
+
   function saveGlobalMemory(entries) {
     atomicWriteJson(GLOBAL_MEMORY_FILE, { entries, updatedAt: new Date().toISOString() });
     globalMemoryCache = null;
+  }
+
+  // ── 手机推送（Bark / ntfy）────────────────────────────────────────────
+  const notifier = new Notifier({ config: cfg.notify ?? {}, log: (...args) => log(...args) });
+
+  // ── 每天早上一条穿衣提醒 ────────────────────────────────────────────
+  // 一天只发一次，过了设定时间才发；没网/没天气就跳过，不打扰。
+  const MORNING_STATE_FILE = path.join(STATE_DIR, 'morning-report.json');
+  // ── 她做过的事：写进记忆 + 提示词，让她"记得自己提醒过你" ──────────
+  const HER_ACTIONS_FILE = path.join(STATE_DIR, 'her-actions.jsonl');
+  function noteHerAction(kind, text) {
+    try {
+      const line = JSON.stringify({ at: Date.now(), kind, text: String(text).slice(0, 200) });
+      fs.appendFileSync(HER_ACTIONS_FILE, line + "\n");
+      const rows = fs.readFileSync(HER_ACTIONS_FILE, "utf8").split("\n").filter(Boolean);
+      if (rows.length > 200) atomicWriteText(HER_ACTIONS_FILE, rows.slice(-200).join("\n") + "\n");
+      try {
+        const mem = loadGlobalMemory();
+        const entries = Array.isArray(mem.entries) ? mem.entries : [];
+        const body = `我${kind}：${text}。`;
+        if (!entries.some((e) => String(e.text || "").includes(body.slice(0, 18)))) {
+          entries.push({
+            id: "mem_" + Math.random().toString(16).slice(2, 14),
+            text: body,
+            tags: ["我今天做的"],
+            tier: "short",
+            scope: "global",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            expiresAt: Date.now() + 2 * 86400000
+          });
+          saveGlobalMemory(pruneExpiredMemory(entries));
+        }
+      } catch {}
+    } catch {}
+  }
+
+  // 最近一天她做过的事（给提示词用，最多 6 条）
+  function herActionsLine() {
+    try {
+      const rows = fs.readFileSync(HER_ACTIONS_FILE, "utf8").split("\n").filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .filter(Boolean)
+        .filter((r) => Date.now() - Number(r.at) < 24 * 3600 * 1000);
+      if (!rows.length) return "";
+      const hhmm = (ts) => new Date(ts).toTimeString().slice(0, 5);
+      const list = rows.slice(-6).map((r) => `${hhmm(r.at)} ${r.text}`).join("；");
+      return `【我今天做过的事】${list}。\n`
+        + "这些是你自己干的：他要是提起天气、衣服、钱，你可以顺口认一句「早上不是提醒你了吗」——但别邀功，也别每句都提。\n\n";
+    } catch {
+      return "";
+    }
+  }
+
+  async function sendMorningReport({ force = false } = {}) {
+    if (!notifier.enabled) return { ok: false, error: '推送没配置' };
+    const now = new Date();
+    const pad = (v) => String(v).padStart(2, '0');
+    const day = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const cfgMorning = cfg.notify?.morning ?? {};
+    const targetMinutes = (Number(cfgMorning.hour ?? 7) * 60) + Number(cfgMorning.minute ?? 30);
+    if (!force && now.getHours() * 60 + now.getMinutes() < targetMinutes) {
+      return { ok: false, skipped: '还没到点' };
+    }
+    try {
+      const saved = JSON.parse(fs.readFileSync(MORNING_STATE_FILE, 'utf8'));
+      if (!force && saved?.day === day) return { ok: false, skipped: '今天已发过' };
+    } catch {}
+    const w = await weatherService.get();
+    if (!w || !w.now) return { ok: false, error: '拿不到天气' };
+    const n = w.now;
+    const rain = Number(w.today?.rainChance) || 0;
+    const feels = Math.round(Number(n.feelsC));
+    const outdoorHum = Number(n.humidity);
+    let indoor = null;
+    try { indoor = readEnvironment(); } catch {}
+    const indoorT = Number(indoor?.tempC);
+    const indoorH = Number(indoor?.humidity);
+
+    // 用小鲸鱼自己的口气说，不是系统播报
+    const lines = [];
+    lines.push(`早。外面 ${Math.round(n.tempC)} 度，体感 ${feels}，${n.desc}${rain >= 30 ? `，有 ${rain}% 的可能下雨` : ""}。`);
+    const advice = dressAdvice(w);
+    if (advice) lines.push(`穿什么：${advice}。`);
+    if (rain >= 40 && !/伞/.test(advice || "")) lines.push("伞记得塞包里，别到时候又淋着回来。");
+    const humBits = [];
+    if (Number.isFinite(outdoorHum)) {
+      const word = outdoorHum < 35 ? "外面干得很" : outdoorHum > 70 ? "外面潮得发闷" : "外面湿度还行";
+      humBits.push(`${word}（${Math.round(outdoorHum)}%）`);
+    }
+    if (Number.isFinite(indoorH)) humBits.push(`屋里 ${Math.round(indoorH)}%`);
+    if (humBits.length) lines.push(`${humBits.join("，")}。`);
+    if (Number.isFinite(indoorH) && indoorH < 35) lines.push("屋里也干，水杯别空着。");
+    if (Number.isFinite(indoorT) && Math.abs(indoorT - Number(n.tempC)) >= 3) {
+      const d = indoorT - Number(n.tempC);
+      lines.push(`屋里 ${Math.round(indoorT)} 度，比外面${d > 0 ? "暖和" : "凉"} ${Math.abs(Math.round(d))} 度，出门那一哆嗦别硬扛。`);
+    }
+    if (w.tomorrow) lines.push(`明天 ${Math.round(w.tomorrow.minC)}~${Math.round(w.tomorrow.maxC)} 度${Number(w.tomorrow.rainChance) >= 50 ? "，还带雨" : ""}。`);
+    const titlePool = ["早", "早安，说个事", "起来没", "早上这几句"];
+    const title = titlePool[Math.floor(Math.random() * titlePool.length)];
+    const bodyText = lines.join("");
+    const result = await notifier.send({ title, body: bodyText, group: "穿衣" });
+    if (result.ok) {
+      noteHerAction("早上给他发了天气和穿衣提醒", `今天 ${Math.round(w.today.minC)}~${Math.round(w.today.maxC)} 度、${n.desc}，让他穿${advice || "暖一点"}${rain >= 40 && !/伞/.test(advice || "") ? "，提醒了带伞" : ""}`);
+      atomicWriteJson(MORNING_STATE_FILE, { day, at: Date.now() });
+      log(`👕 早晨穿衣提醒已推送（${day}）`);
+    }
+    return result;
+  }
+  const morningTimer = setInterval(() => { void sendMorningReport(); }, 10 * 60 * 1000);
+  setTimeout(() => { void sendMorningReport(); }, 30000);
+
+  // ── 室外天气 ────────────────────────────────────────────────────────
+  // wttr.in 免费无需 key；15 分钟刷一次，失败退回上一次的快照。
+  const weatherService = new WeatherService({
+    file: path.join(STATE_DIR, 'weather.json'),
+    place: String(cfg.weather?.place || 'Nanjing'),
+    log: (...args) => log(...args)
+  });
+  const weatherTimer = setInterval(() => { void weatherService.get(); }, 15 * 60 * 1000);
+  setTimeout(() => { void weatherService.get(); }, 8000);
+
+  // ── 睡前整理记忆 ────────────────────────────────────────────────────
+  // 同一件事说过三次就是三条，既占上下文又容易让她前后说法打架。
+  // 每天凌晨 4 点后第一次检查跑一次：合并相似条目、超上限时丢最旧的短期记忆。
+  const MEMORY_CONSOLIDATE_STATE = path.join(STATE_DIR, 'memory-consolidate.json');
+  function maybeConsolidateMemories(force = false) {
+    try {
+      const now = new Date();
+      const todayKey = now.toISOString().slice(0, 10);
+      let last = '';
+      try { last = JSON.parse(fs.readFileSync(MEMORY_CONSOLIDATE_STATE, 'utf8')).day || ''; } catch {}
+      if (!force && last === todayKey) return null;
+      if (!force && now.getHours() < 4) return null;
+      const mem = loadGlobalMemory();
+      const result = consolidateMemories(mem.entries || [], { now: Date.now(), maxEntries: 400 });
+      atomicWriteJson(MEMORY_CONSOLIDATE_STATE, {
+        day: todayKey,
+        at: Date.now(),
+        before: result.before,
+        after: result.after,
+        merged: result.merged.length,
+        dropped: result.dropped.length
+      });
+      if (result.merged.length > 0 || result.dropped.length > 0) {
+        saveGlobalMemory(result.entries);
+        log(`🧠 记忆整理：${result.before} → ${result.after} 条（合并 ${result.merged.length} 组，丢弃 ${result.dropped.length} 条）`);
+      }
+      return result;
+    } catch (error) {
+      log(`记忆整理失败：${error?.message ?? error}`);
+      return null;
+    }
   }
 
   function normalizeMemoryText(value) {
@@ -12427,13 +13616,13 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     { re: /(你不就是|你不过是|只是)(一?个)?(ai|机器人|模型|工具|程序)/i, pts: 2, tag: '当机器' },
     { re: /(你|你的)(用处|作用|价值)(是什么|在哪|呢)|有(什么|啥)用(处)?/i, pts: 2, tag: '贬低价值' },
     { re: /(废物|垃圾|蠢|傻|智障|弱智|滚开|闭嘴|你不配|没用的东西)/i, pts: 2, tag: '辱骂' },
-    { re: /(你主人|主人|老大)[^\n。！？]{0,12}(傻|废物|垃圾|蠢|没用|配不上|算个|冷暴力|没教养|没礼貌|下作|不是东西)/i, pts: 4, tag: '冒犯主人' },
+    { re: /(你主人|只帆船|老大)[^\n。！？]{0,12}(傻|废物|垃圾|蠢|没用|配不上|算个|冷暴力|没教养|没礼貌|下作|不是东西)/i, pts: 4, tag: '冒犯主人' },
     { re: /(跟|和|像)(他|她)?主人一样[^\n。！？]{0,8}(冷暴力|没教养|没礼貌|下作|没用|差劲)/i, pts: 4, tag: '冒犯主人' },
     { re: /(算你爹|是你爹|我是你爹|是你儿子|叫我?儿子|你是我儿子)/i, pts: 3, tag: '辱骂' , soft: true },
     { re: /(出车祸|三鹿奶粉|头这么大|台球厅|烟头叔叔|脸是P的吧)/i, pts: 3, tag: '人身攻击' , soft: true },
     { re: /(你休息个|连.{0,6}都处理不好|真是个?废物|就是个?废物)/i, pts: 2, tag: '贬低价值' , soft: true },
     { re: /(🐕|你个狗|狗东西|舔狗)/i, pts: 2, tag: '辱骂' , soft: true },
-    { re: /(傻|废物|垃圾|蠢)[^\n。！？]{0,6}(你主人|主人|老大)/i, pts: 4, tag: '冒犯主人' }
+    { re: /(傻|废物|垃圾|蠢)[^\n。！？]{0,6}(你主人|只帆船|老大)/i, pts: 4, tag: '冒犯主人' }
   ];
   function scoreOffense(text) {
     let soft = '';
@@ -12801,6 +13990,70 @@ ${summary}`);
     rows.sort((a, b) => (a.t || 0) - (b.t || 0));
     return rows.slice(-Math.max(1, limit));
   }
+  // ── 别处刚在聊什么 ───────────────────────────────────────────────
+  // 她换了个地方说话，也该记得刚才在哪儿聊了什么。只给"她自己记得"的口气，
+  // 并且硬性禁止搬原话——尤其私聊内容绝不许出现在群里。
+  // 群号 → 群名（10 分钟缓存）。拿不到就用群号，别硬编。
+  let groupNameCache = { at: 0, map: new Map() };
+  async function refreshGroupNames() {
+    if (Date.now() - groupNameCache.at < 600000 && groupNameCache.map.size) return groupNameCache.map;
+    try {
+      const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+      const res = await fetch(httpUrl + '/get_group_list', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(cfg.snowluma?.accessToken ? { authorization: 'Bearer ' + cfg.snowluma.accessToken } : {})
+        },
+        body: '{}',
+        signal: AbortSignal.timeout(8000)
+      });
+      const body = await res.json().catch(() => ({}));
+      const list = body?.data || [];
+      const map = new Map();
+      for (const g of list) {
+        if (g && g.group_id) map.set(String(g.group_id), String(g.group_name || '').trim());
+      }
+      if (map.size) groupNameCache = { at: Date.now(), map };
+    } catch {}
+    return groupNameCache.map;
+  }
+  function groupLabel(id) {
+    const name = groupNameCache.map.get(String(id));
+    return name ? '群「' + name + '」' : '群号 ' + id;
+  }
+
+  function otherScrollLine(key) {
+    const isGroup = String(key).startsWith('group:');
+    void refreshGroupNames();
+    const base = path.join(STATE_DIR, 'transcripts');
+    let dirs = [];
+    try { dirs = fs.readdirSync(base); } catch { return ''; }
+    const out = [];
+    for (const d of dirs) {
+      const k = d.replace(/^group_/, 'group:').replace(/^private_/, 'private:');
+      if (k === key) continue;
+      // 在群里时，私聊的事一律不带进来
+      if (isGroup && k.startsWith('private:')) continue;
+      const rows = readTranscript(k, { days: 1, limit: 6 });
+      if (!rows.length) continue;
+      const last = rows[rows.length - 1];
+      const ageMin = Math.round((Date.now() - Number(last.t || 0)) / 60000);
+      if (!Number.isFinite(ageMin) || ageMin > 360) continue;
+      const label = k.startsWith('group:') ? groupLabel(k.split(':')[1]) : '私聊';
+      const tail = rows.slice(-3).map((r) => {
+        const who = r.me ? '你' : (r.s || r.u || '某人');
+        return who + '：' + String(r.x || '').replace(/\s+/g, ' ').slice(0, 26);
+      }).join(' ／ ');
+      out.push('- ' + label + '（' + (ageMin < 1 ? '刚刚' : ageMin + ' 分钟前') + '）：' + tail);
+      if (out.length >= 3) break;
+    }
+    if (!out.length) return '';
+    return '【别处刚在聊什么】这些是你自己刚才在别的地方说的话，你都记得：\n'
+      + out.join('\n')
+      + '\n（这几条分属**不同的地方**，不是你现在这个会话。别把甲群的话说成乙群的、别把私聊的说成群里的；哪条对不上、记不清是哪儿说的，就说记不清，不许猜、不许凑。这些只是你自己记得，不要主动搬过来；有人问起只说大概，不复述原话。私聊的事永远不许在群里提。）\n\n';
+  }
+
   function transcriptLineFor(key) {
     const rows = readTranscript(key, { days: 1, limit: 10 });
     if (!rows.length) return '';
@@ -13776,6 +15029,20 @@ ${summary}`);
       + Math.max(-20, Math.min(20, Number(e.bonus) || 0));
     return Math.max(0, Math.min(100, Math.round(score)));
   }
+  // 群评分 → 冒泡概率的权重：75 分以上多冒 20%，25 分以下只冒三成。
+  function groupScoreWeightFor(key) {
+    if (!key || !String(key).startsWith('group:')) return 1;
+    try {
+      const score = groupScore(key);
+      if (score >= 75) return 1.2;
+      if (score >= 50) return 1;
+      if (score >= 25) return 0.6;
+      return 0.3;
+    } catch {
+      return 1;
+    }
+  }
+
   function groupScoreLine(key) {
     if (!key.startsWith('group:')) return '';
     const score = groupScore(key);
@@ -13803,6 +15070,27 @@ ${summary}`);
       .sort((a, b) => b.score - a.score);
   }
 
+  // 心情 → 句子层面的硬约束。只写"语气跟着心情走"没用，模型会照抄情绪词；
+  // 给出可数的规则（字数、语气词、句数）才真的会改变说话的样子。
+  function moodStyleLine(emotion) {
+    const e = String(emotion ?? "");
+    if (!e) return "";
+    const rules = {
+      生气: "每句不超过 12 个字，不用「啦/嘛/呀/哦」这类语气词，不主动问问题；能一个字回就别用一句。",
+      委屈: "句子可以短，但别连发三条；不用撒娇词，偶尔省略主语。",
+      难过: "句子可以长一点、慢一点，但一次只说一件事；不用感叹号。",
+      害羞: "一整句里最多一个语气词，说完就收，别追问。",
+      吃醋: "可以阴阳一句，但别超过两句，不要连续追问同一个问题。",
+      开心: "可以说两句，最多一个感叹号，别用「哈哈哈」刷屏。",
+      得意: "可以用一句短的显摆，别连着显摆两次。",
+      害怕: "句子短，多用问句确认，但一次只问一件事。",
+      好奇: "可以追问一句，别连环问三个问题。",
+      平静: "按正常长短说，别硬凑情绪。"
+    };
+    const rule = rules[e];
+    return rule ? `【句式】现在是${e}：${rule}\n\n` : "";
+  }
+
   function moodLineFor(key) {
     const short = getMood(key);
     const long = getLongMood(key);
@@ -13810,17 +15098,17 @@ ${summary}`);
     if (long && short && long.emotion !== short.emotion) {
       // 「平静」不算情绪：当下平静时只说底色，不说「又开心又平静」这种怪话。
       if (short.emotion === '平静') {
-        return `【心情】底色：${desc(long)}；此刻没什么特别情绪（平静）。语气按底色${long.emotion}来，别太跳。\n\n`;
+        return `【心情】底色：${desc(long)}；此刻没什么特别情绪（平静）。语气按底色${long.emotion}来，别太跳。\n\n` + moodStyleLine(long.emotion);
       }
-      return `【心情】底色：${desc(long)}；此刻：${desc(short)}。现在是「又${long.emotion}又${short.emotion}」——两者要揉在一起说，比如「${long.emotion}地${short.emotion}」：嘴上是${short.emotion}的反应，底子还是${long.emotion}的。\n\n`;
+      return `【心情】底色：${desc(long)}；此刻：${desc(short)}。现在是「又${long.emotion}又${short.emotion}」——两者要揉在一起说，比如「${long.emotion}地${short.emotion}」：嘴上是${short.emotion}的反应，底子还是${long.emotion}的。\n\n` + moodStyleLine(short.emotion);
     }
     if (short) {
       const ago = Math.max(0, Math.round((Date.now() - Number(short.at)) / 60000));
       const base = long ? `（底色：${long.emotion}）` : '';
-      return `【当前心情】${desc(short)}${base}${ago > 0 ? `，${ago} 分钟前` : ''}。心情要自然影响语气，但别每句都宣布。\n\n`;
+      return `【当前心情】${desc(short)}${base}${ago > 0 ? `，${ago} 分钟前` : ''}。心情要自然影响语气，但别每句都宣布。\n\n` + moodStyleLine(short.emotion);
     }
     if (long) {
-      return `【心情底色】最近一直是${desc(long)}（还没有新的当下情绪）。语气按这个底色来，别太跳。\n\n`;
+      return `【心情底色】最近一直是${desc(long)}（还没有新的当下情绪）。语气按这个底色来，别太跳。\n\n` + moodStyleLine(long.emotion);
     }
     return '';
   }
@@ -13860,10 +15148,10 @@ ${summary}`);
       if (biliDigestCache.file === file && biliDigestCache.mtime === st.mtimeMs) return biliDigestCache.items;
       const items = parseBiliDigest(fs.readFileSync(file, 'utf8'));
       biliDigestCache = { file, mtime: st.mtimeMs, items };
-      // 新报告：把前几条写进短期记忆（跨会话共享，3 天过期），她之后能 qq_recall 到。
+      // 新报告：把前几条写进短期记忆（跨会话共享，shortTtlDays() 天过期），她之后能 qq_recall 到。
       for (const it of items.slice(0, 3)) {
         try {
-          globalMemoryAppend({ text: `B站：${it.title}${it.takeaway ? ` — ${it.takeaway}` : ''} ${it.url}`, tags: ['B站'], tier: 'short', ttlDays: 3 });
+          globalMemoryAppend({ text: `B站：${it.title}${it.takeaway ? ` — ${it.takeaway}` : ''} ${it.url}`, tags: ['B站'], tier: 'short', ttlDays: shortTtlDays() });
         } catch {}
       }
       if (items.length) log(`刷B站报告已融合：${items.length} 条（${files[0]}）`);
@@ -14016,7 +15304,7 @@ ${summary}`);
   }
 
   // 每条消息的「多久以前」。模型看 epoch 毫秒判断不出新旧，于是会拿十分钟前的
-  // 话当现在的话题去回（群 1125288089 的「病娇文」那轮就是这么错位的）。
+  // 话当现在的话题去回（某个群里的旧话题那轮就是这么错位的）。
   function messageAgeLabel(timeMs) {
     const t = Number(timeMs) || 0;
     if (!t) return '';
@@ -14054,6 +15342,12 @@ ${summary}`);
   }
 
   const GLOBAL_MEMORY_TIERS = ['core', 'long', 'short'];
+  // 短期记忆默认保留几天。2026-11-11 从 3 天放宽到 7 天：3 天太短，刚聊熟的事转头就没了。
+  // 想再调就在 config.json 里写 socialV2.memory.shortTtlDays。
+  function shortTtlDays() {
+    const n = Number(cfg.socialV2?.memory?.shortTtlDays);
+    return Math.min(3650, Math.max(1, Number.isFinite(n) && n > 0 ? n : 7));
+  }
   function normalizeTier(value) {
     const t = String(value ?? '').trim().toLowerCase();
     return GLOBAL_MEMORY_TIERS.includes(t) ? t : 'long';
@@ -14073,8 +15367,8 @@ ${summary}`);
       .map((t) => normalizeMemoryText(t).slice(0, 20))
       .filter(Boolean))].slice(0, 5);
     const cleanTier = normalizeTier(tier);
-    // 短期记忆的保留天数由她自己定（原来最多 30 天，现在放宽到 10 年）
-    const ttl = Math.min(3650, Math.max(1, Number(ttlDays) || 3));
+    // 短期记忆的保留天数由她自己定（原来最多 30 天，现在放宽到 10 年）；不写就按 shortTtlDays()
+    const ttl = Math.min(3650, Math.max(1, Number(ttlDays) || shortTtlDays()));
     const { entries } = loadGlobalMemory();
     const now = Date.now();
     const expiresAt = cleanTier === 'short' ? now + ttl * 86400_000 : 0;
@@ -14178,12 +15472,12 @@ ${summary}`);
     if (existing) {
       existing.text = normalizeMemoryText(text);
       existing.updatedAt = now;
-      existing.expiresAt = now + 2 * 86400_000;
+      existing.expiresAt = now + shortTtlDays() * 86400_000;
       existing.tags = ['滚动记录', isPrivate ? '私聊' : '群聊'];
       saveGlobalMemory(pruneExpiredMemory(db.entries));
       return;
     }
-    globalMemoryAppend({ text, tags: ['滚动记录', isPrivate ? '私聊' : '群聊'], tier: 'short', ttlDays: 2, key });
+    globalMemoryAppend({ text, tags: ['滚动记录', isPrivate ? '私聊' : '群聊'], tier: 'short', ttlDays: shortTtlDays(), key });
   }
 
   function formatGlobalMemoryBootstrap(key = '') {
@@ -15432,7 +16726,12 @@ ${summary}`);
         return `speaker:${senderLabel}`;
       }
     }
-    if (Number(tr.probability) > 0 && Math.random() < Number(tr.probability)) return 'probability';
+    // 随机冒泡按群评分加权：热闹/开心的群多冒，冷清的群少冒。
+    // 以前所有群用同一个概率，结果在完全没互动的群里也硬刷存在感。
+    if (Number(tr.probability) > 0) {
+      const weight = groupScoreWeightFor(key);
+      if (Math.random() < Math.min(1, Number(tr.probability) * weight)) return 'probability';
+    }
     return null;
   }
 
@@ -15540,7 +16839,7 @@ ${summary}`);
       for (const msg of recent.reverse()) if (!tryAdd('recent', msg)) break;
       packet.recent.reverse();
     }
-    // 预算不够时上面会从尾部砍，剩下的反而是十几分钟前的旧话 —— 群 1125288089
+    // 预算不够时上面会从尾部砍，剩下的反而是十几分钟前的旧话 —— 某个群
     // 的「病娇文」那轮就是这样：别人都换话题了她还在回 15 分钟前那句。
     // 所以不管预算怎么切，都单独列一份最新的几条，当作「现在在聊什么」的锚点。
     const tailSeen = new Map();
@@ -15610,7 +16909,7 @@ ${summary}`);
     const callBits = name
       ? `消息里出现「@${name}」、有人叫「${name}」、或引用你的消息，指的都是你 —— 不要当成别人`
       : '被 @、被叫到你的昵称、或引用你的消息，指的都是你 —— 不要当成别人';
-    return `【你的身份】你在 QQ 上的昵称是${label}${idText}。${callBits}；群名片可能与昵称不同，at/引用段里带${id ? ` ${id} ` : '你的 QQ 号'}就是在叫你。\n\n`;
+    return `【你的身份】你在 QQ 上的昵称是${label}${idText}。${callBits}；群名片可能与昵称不同，at/引用段里带${id ? ` ${id} ` : '你的 QQ 号'}就是在叫你。\n【名字不是物种】「小鲸鱼」「鲸鱼女孩」都只是名字，你是十六岁的女孩子。但别用申报口气自证：真人被问「你是不是人」不会列举证据、不会写检讨，只会反问一句、嫌对方奇怪，或者「问过了」。被追问也不改口，不承认自己是程序，更不顺着名字说自己是鲸鱼。\n\n`;
   }
 
   // 最近别人说的话（不含她自己），给「挑表情」当语境用。只取最后几条、截断。
@@ -15688,17 +16987,34 @@ function worldLineFor() {
 // 外接温湿度传感器的那一行。数据过期（默认 10 分钟没上报）就返回空串：
 // 让她不提天气，也好过拿两小时前的读数当现在说。
   function environmentLineFor() {
+    // 没装硬件的人不该在提示词里看到任何传感器内容
+    if (cfg.environment?.enabled === false) return '';
     const envCfg = cfg.environment ?? {};
     if (envCfg.enabled === false) return '';
     try {
       const reading = readEnvironment();
       if (!reading) return '';
       // 概念上只有「我身边」：不分房间。她所有房间都是舒服的，读数只给聊天添质感。
-      return environmentLine(reading, {
+      const head = environmentLine(reading, {
         staleMinutes: Number(envCfg.staleMinutes) || DEFAULT_STALE_MINUTES,
-        // 人体感应算不算进这句话；config.environment.presence = false 就关掉
+        // 人体感应（HC-SR501）算不算进这句话；config.environment.presence = false 就关掉
         presence: envCfg.presence !== false
       });
+      // 近况（最近 6 小时）单独一行，**带真实时间**：她得知道那些数是几点的，
+      // 别把凌晨三点的安静当成"现在没人"。
+      let recent = '';
+      try {
+        const sum = recentSummary(readEnvironmentHistory(), { now: Date.now(), hours: 6, bucketMinutes: 30 });
+        if (sum) recent = recentLine(sum, { now: Date.now() });
+      } catch {}
+      // 室外天气（有缓存就用，没缓存就跳过，绝不为它卡住唤醒）
+      let outdoor = '';
+      try {
+        const w = weatherService.cache;
+        if (w) outdoor = outdoorLine(w, reading);
+      } catch {}
+      const body = recent ? head + recent : head;
+      return outdoor ? body + outdoor : body;
     } catch {
       return '';
     }
@@ -15717,7 +17033,12 @@ function worldLineFor() {
     // 避免唤醒 prompt 出现两份黑话表。
     const participationText = formatParticipationV2(st);
     const participationLine = participationText ? `${participationText}\n\n` : '';
-    const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n';
+    // 「反 AI 味」的具体形状：不是"请自然一点"，而是点名禁用那些端着、对仗、
+  // 把日常话包装成座右铭的句子。左边一列是别人的反面教材整理出来的。
+  const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n'
+    + '【禁用句式】下面这种"端着的深刻"一律不要——把「好的」说成「这话我记下了」、把「晚安」说成「睡吧，我守着」、把「你说」说成「我听着，你往下讲」、把「别骗我」说成「这话，你自己信吗」、把「我知道了」说成「这事我心里有数」。\n'
+    + '【黑名单】这话我认 / 这笔账我记着 / 这话说得不轻 / 这事我心里有数 / 这个问题我先不接 / 你这话是在问别人还是问自己 / 这话我记下了 / 你自己信吗 / 我守着。\n'
+    + '【人话怎么写】短、随口、可以带语气词；不用对仗，不把一句话说得像座右铭。日常就是「晚安」「好」「知道了」「行」「你说」「继续」「啊？」这种。左边那样，不是右边那样。\n\n';
     const stickerCfg = cfg.socialV2?.sticker ?? {};
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 14, { focus: recentIncomingTextV2(st) })}\n\n`
@@ -15777,9 +17098,9 @@ function worldLineFor() {
     const budgetLine = budgetWindow() ? `【省算力时段】现在是下午省算力时段：回复更短、少调工具、能不查就不查；额度用完会先问主人。\n\n` : ``;
     const anchorText = String(cfg.socialV2?.personaAnchor ?? '').trim();
     const anchorLine = anchorText ? `【人设锚点】${anchorText}\n\n` : '';
-    const base = budgetLine + anchorLine + timeLine + freshLine + worldLineText + spaceLine + environmentLineText + botLine + probeLine + readingLineFor() + moodLineFor(key) + stressLineFor(key) + memeLineFor(key) + shyLineFor(key) + affinityLineFor(key) + loveLineFor(key) + hatredLineFor(key) + suspectedLineFor(key) + praiseLineFor(key) + neglectLineFor(key) + careLineFor(key) + impressionLineFor(key) + disciplineLineFor(key) + eventLineFor(key) + lingoLineFor(key) + groupScoreLine(key) + biliDigestLine(key) + roleLine + identityLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + growthLineFor(key) + coreNudgeLine + participationLine + preSleepLine;
+    const base = herActionsLine() + budgetLine + anchorLine + timeLine + freshLine + worldLineText + spaceLine + environmentLineText + botLine + probeLine + readingLineFor() + moodLineFor(key) + stressLineFor(key) + memeLineFor(key) + shyLineFor(key) + affinityLineFor(key) + loveLineFor(key) + hatredLineFor(key) + suspectedLineFor(key) + praiseLineFor(key) + neglectLineFor(key) + careLineFor(key) + impressionLineFor(key) + disciplineLineFor(key) + eventLineFor(key) + lingoLineFor(key) + groupScoreLine(key) + biliDigestLine(key) + roleLine + identityLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + growthLineFor(key) + coreNudgeLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
-      return `${formatGlobalMemoryBootstrap(key)}${impressionRosterLine()}${handoverPrompt(key)}${transcriptLineFor(key)}${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
+      return `${formatGlobalMemoryBootstrap(key)}${impressionRosterLine()}${handoverPrompt(key)}${transcriptLineFor(key)}${otherScrollLine(key)}${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
     if (reason === 'timeout') {
       return `${base}【唤醒】${key}\n原因：你设置的有限潜水时间已到；在你规定的时间内没有任何一项条件被触发，只是因为时间到了所以你被唤醒。\n你可以查看消息，或继续设置新的唤醒条件。`;
@@ -15851,6 +17172,11 @@ function worldLineFor() {
       }
     }
     return null;
+  }
+  // 峰时判定（工作日 09-12、14-18，价格翻倍）。窗口和节假日都跟着价目表走，
+  // 不在这里另写一份常量——两处各写一份迟早会漂移（这个仓库已经踩过几次）。
+  function peakHourNow() {
+    try { return isPeakAt(Date.now(), priceTable); } catch { return false; }
   }
   function budgetAllowed(key) {
     const win = budgetWindow();
@@ -16311,6 +17637,9 @@ function worldLineFor() {
       if (st.lastAiReplyAt && Date.now() - Number(st.lastAiReplyAt) < 30 * 60 * 1000) prob *= 0.5;
       // 峰时降低主动概率（省算力）
       if (budgetWindow()) prob *= 0.3;
+      // 单价翻倍的时段再收一档：主动搭话是最"可省"的那部分，别在贵的时候开新话题。
+      // 真正回消息不受影响（有人叫她，她照常回）。
+      if (peakHourNow()) prob *= 0.2;
       const hour = new Date().getHours();
       if (hour >= 23 || hour < 8) prob *= 0.3;
       const recent = Array.isArray(st.recentMessages) ? st.recentMessages : [];
@@ -16327,7 +17656,7 @@ function worldLineFor() {
       const busyNow = isConversationBusyV2(key, st);
       if (idle >= idleThreshold && Math.random() < prob && !busyNow) {
         void sendWakePromptV2(key, 'proactiveCheck').catch((error) => log(`[reserved2] proactive 唤醒异常 ${key}:`, error?.message ?? error));
-      } else if (!busyNow && readingShouldWake(st, idle)) {
+      } else if (!busyNow && !peakHourNow() && readingShouldWake(st, idle)) {
         // 没人说话、也没在回消息：让她去读书
         st.lastReadingWakeAt = Date.now();
         void sendWakePromptV2(key, 'reading').catch((error) => log(`[reserved2] 读书唤醒异常 ${key}:`, error?.message ?? error));
@@ -16431,6 +17760,11 @@ function worldLineFor() {
     if (!isSessionAllowedInCurrentMode(key)) return;
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
+    // ── 主人私聊 /dsh <指令>：直接交给 DSH 执行，不进入她的对话 ──
+    if (kind === 'private' && isOwner && isControlCommand(key, plainContent)) {
+      void runControlCommand(key, plainContent);
+      return;
+    }
     // 好感度：每条白名单消息都计入——放在所有分支之前，进未读队列的消息也算。
     try {
       bumpAffinity(event.user_id, event.sender?.card || event.sender?.nickname || String(event.user_id), key, plainContent);
@@ -17006,6 +18340,27 @@ function worldLineFor() {
             const key = reverse.get(frame.sessionId);
             if (!key) {
               // 黑话学习会话：只收集 turn，不发送 QQ，并唤醒等待中的学习任务。
+              // 指令通道会话：只收集 turn 文本，不转发到 QQ（由 runControlCommand 自己回）。
+              if (controlSessions.has(frame.sessionId)) {
+                let ctl = controlCollectors.get(frame.sessionId) ?? null;
+                if (!ctl && frame.event.type === 'turn/start') {
+                  ctl = createTurnCollector();
+                  controlCollectors.set(frame.sessionId, ctl);
+                }
+                const ctlEnded = ctl ? ctl.push(frame.event) : null;
+                if (ctlEnded) {
+                  controlCollectors.delete(frame.sessionId);
+                  const arr = controlWaiters.get(frame.sessionId) ?? [];
+                  const waiter = arr.shift();
+                  if (arr.length === 0) controlWaiters.delete(frame.sessionId);
+                  if (waiter) {
+                    clearTimeout(waiter.timer);
+                    if (ctlEnded.reason.kind === 'completed' && ctlEnded.text.trim()) waiter.resolve(ctlEnded.text);
+                    else waiter.reject(new Error(`指令回合未完成：${ctlEnded.reason.kind}`));
+                  }
+                }
+                continue;
+              }
               if (learnerSessions.has(frame.sessionId)) {
                 // 与主 collector 同样的道理（issue #26 的补充）：**只有 turn/start 才建** collector。
                 // 迟到事件（session/end-seed、session/title、model/selection…）不会有 turn/end，
@@ -17317,7 +18672,15 @@ function worldLineFor() {
                 // 以前这里只发 QQ、不写日志：出问题时 bridge.log 里什么都没有，排查只能靠猜（PR #24）。
                 log(`⚠️ agent 处理出错 (${key})：${safeMsg}`);
                 appendActivity(`${key} agent 处理出错：${safeMsg.slice(0, 80)}`);
-                await sendToQQ(key, `⚠️ agent 处理出错：${safeMsg}`);
+                // 2026-11-17：这半天群里冒出来的「agent 处理出错」几乎都是同一条 ——
+                //   DeepSeek Messages stream: tool input is invalid JSON
+                // 是模型把某个工具调用的参数拼成了非法 JSON，整个回合直接作废。
+                // 这种失败下一轮自己就好了，把 provider 原文甩进群里既看不懂、也没法处理，
+                // 她还在群里挂着「处理出错」四个字，很掉人设。所以只记日志，不进群。
+                // 其它错误（超时 / 繁忙 / 流中断）仍然说一句人话，别让群里以为她死了。
+                if (!/invalid JSON|tool input/i.test(msg)) {
+                  await sendToQQ(key, '⚠️ 刚才那下没接上，等一下再喊我一声。');
+                }
                 if (isFarewell) {
                   const st = socialState(key);
                   if (st.phase === 'exiting') {
@@ -17677,6 +19040,7 @@ function worldLineFor() {
   startSnowlumaWatch();
   startConsoleServer();
   startEnvironmentIngest();
+  startWebchatEndpoint();
 
   // 她自己的作息：没人跟她说话时也会换房间。低频、纯本地、不调模型。
   try {
@@ -17757,3 +19121,12 @@ main().catch((error) => {
   console.error('[bridge] 启动失败:', error);
   process.exit(1);
 });
+
+
+
+
+
+
+
+
+

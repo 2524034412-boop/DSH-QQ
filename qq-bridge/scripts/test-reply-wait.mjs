@@ -202,8 +202,8 @@ test('each reply-wait buffer obeys its own tool switch, never the other one', ()
   assert.equal(r3.data.readThroughSeq, 5, 'a message nobody was allowed to see may not advance the watermark');
 }));
 
-// 2026-11-10 某群：她回完一句就调 qq_wait_for_messages(timeoutMs=200000,
-// quietMs=60000) 把自己挂住，有人 @ 她问「还有别的书吗」，要等满 60 秒静默
+// 2026-11-10 群 1125288089：她回完一句就调 qq_wait_for_messages(timeoutMs=200000,
+// quietMs=60000) 把自己挂住，20:42:59 有人 @ 她问「还有别的书吗」，要等满 60 秒静默
 // 才返回（实际 20:44:34），看起来就是「问了不回，等到下一轮」。直接找她的消息必须
 // 立刻插队返回，普通闲聊照旧等静默。
 test('a direct mention interrupts a parked wait instead of waiting out the quiet window', () => fixture(async ({ request, append }) => {
