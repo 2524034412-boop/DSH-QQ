@@ -72,7 +72,33 @@ console.log(`「这句我认」模板    ${String(tpl.length).padStart(3)} 条  
 console.log(`复述+评价           ${String(restate.length).padStart(3)} 条  ${pct(restate.length)}   ← 目标 <8%`);
 console.log(`对仗/金句           ${String(maxim.length).padStart(3)} 条  ${pct(maxim.length)}   ← 目标 <2%`);
 console.log(`DeepSeek 腔         ${String(dsTone.length).padStart(3)} 条  ${pct(dsTone.length)}   ← 目标 0%：出现就是「端着的深刻」`);
-console.log(`\n长度：中位 ${median} 字，p90 ${p90} 字，最短 ${lens[0]}，最长 ${lens[lens.length - 1]}`);
+  const buckets = { '1~3 字': 0, '4~10 字': 0, '11~20 字': 0, '20 字以上': 0 };
+  for (const L of lens) {
+    if (L <= 3) buckets['1~3 字']++;
+    else if (L <= 10) buckets['4~10 字']++;
+    else if (L <= 20) buckets['11~20 字']++;
+    else buckets['20 字以上']++;
+  }
+  const total = lens.length || 1;
+  // 记一笔历史：以后能对比"这一周比上一周好没有"
+  try {
+    const hist = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', 'state', 'speak-audit-history.jsonl');
+    const row = {
+      at: Date.now(),
+      samples: msgs.length,
+      median, p90,
+      lenBuckets: buckets,
+      ackOnly: msgs.filter((m) => ACK.test(m.text)).length,
+      ackHead: msgs.filter((m) => ACK_HEAD.test(m.text)).length,
+      template: msgs.filter((m) => TEMPLATE.test(m.text)).length,
+      maxim: msgs.filter((m) => MAXIM.test(m.text)).length,
+      dsTone: msgs.filter((m) => DS_HALLMARK.test(m.text)).length
+    };
+    const fsMod = await import('node:fs');
+    fsMod.appendFileSync(hist, JSON.stringify(row) + '\n');
+  } catch {}
+  console.log('长度分布：' + Object.entries(buckets).map(([k, v]) => `${k} ${(v / total * 100).toFixed(0)}%`).join(' · ') + '   ← 真人大约 35/40/20/5');
+  console.log(`\n长度：中位 ${median} 字，p90 ${p90} 字，最短 ${lens[0]}，最长 ${lens[lens.length - 1]}`);
 console.log(`  长度方差小 = 每条都差不多长 = 机器节奏。中位 6~12 字、p90 25 字以上比较像人。`);
 console.log(`\n原样重复的句子 ${repeated.length} 种，最多重复 ${Math.max(...counter.values())} 次`);
 for (const [t, n] of repeated.sort((a, b) => b[1] - a[1]).slice(0, 5)) console.log(`  ${n}× ${t}`);

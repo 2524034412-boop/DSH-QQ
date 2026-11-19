@@ -259,6 +259,7 @@
                                      "wakeMaxChars":  6000
                                  },
                      "initialPromptMaxChars":  2000,
+                     "linkVideoPerDay":  6,
                      "media":  {
                                    "maxBytes":  8388608,
                                    "maxPixels":  64000000,
