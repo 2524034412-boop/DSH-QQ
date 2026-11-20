@@ -6006,6 +6006,25 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           return;
         }
         if (req.method === 'GET' && (url.pathname === '/dashboard' || url.pathname === '/dashboard/')) {
+          // 先建 HTML，成功了再发头。以前是先 writeHead(200) 再渲染——
+          // 渲染一抛错，头已经发出去了、body 永远发不完，浏览器上就是白屏/一直转，
+          // 用户只会说"点开网址也没有"。现在出错就老老实实回一张能看懂的错误页。
+          let html = '';
+          try {
+            html = buildDashboardFancy();
+          } catch (error) {
+            const msg = String(error && error.message ? error.message : error);
+            const stack = String(error && error.stack ? error.stack : '').split('\n').slice(0, 8).join('\n');
+            log('[dashboard] 渲染失败：' + msg);
+            html = '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+              + '<title>面板渲染失败</title></head>'
+              + '<body style="font:14px/1.6 system-ui,-apple-system,\'Segoe UI\',sans-serif;padding:24px;max-width:860px;color:#222">'
+              + '<h1 style="font-size:18px;margin:0 0 8px">面板渲染失败</h1>'
+              + '<p style="color:#666;margin:0 0 12px">桥接是活的，只是生成这个页面时抛错了。'
+              + '把下面这段发给作者就能定位；也可以访问 <code>/api/debug/dashboard</code> 看同一份错误。</p>'
+              + '<pre style="background:#f6f6f6;border:1px solid #e5e5e5;border-radius:8px;padding:12px;'
+              + 'overflow:auto;white-space:pre-wrap;font-size:12px">' + escHtml(msg + '\n\n' + stack) + '</pre></body></html>';
+          }
           res.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store',
@@ -6013,7 +6032,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             'X-Content-Type-Options': 'nosniff',
             'Referrer-Policy': 'no-referrer'
           });
-          res.end(buildDashboardFancy());
+          res.end(html);
           return;
         }
         // ── 「她」的舞台页（/her）：Live2D 直接在面板里演；和桌面小窗同模型 ──
