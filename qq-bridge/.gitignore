@@ -66,3 +66,20 @@ docs/guides/VOICE.md
 # 语音库（用户个人音频素材，config.json 的 socialV2.voice.dir 指向此处）
 audio/
 
+# ── 人格卡：只公开示例，真实人格卡永不入库 ─────────────────────────
+# 理由：人格卡里写的是「她是谁」——包含私人关系、偏好、雷点，以及只有本机
+# 才成立的细节。一旦进了公开仓库就进了 Git 历史，删文件也删不掉（还会被
+# fork 保留），所以只能从入口处拦住。
+# 公开仓库只保留 roles/README.md（格式说明）、roles/示例人格.md（样例）、
+# roles/world.md（世界观骨架）。
+/roles/独立AI.md
+/roles/独立AI*.md
+/roles/*.md.bak*
+/roles/*.bak-*
+
+# 语音参考样本（个人音色）；注意不要写成 data/，data/memes.db 是要进库的
+/data/voice-ref/
+
+# 网页群聊的运行时数据：邀请码、成员、上传的图片与语音、日志
+/webchat/data/
+
