@@ -784,7 +784,21 @@ function createHandlers() {
       if (result.status === 0) {
         return sendJson(res, 502, { ok: false, error: '桥接没在跑：' + String(result.data?.error ?? '连不上 127.0.0.1:3100') })
       }
-      return sendJson(res, 200, { ok: true, status: result.status, note: '已在全屏窗口打开可视化面板' })
+      // 204/200 = 桥接自己拉起了窗口；200 也可能是"找不到浏览器"的 JSON。
+      // 以前的写法只挡 status===0，302/500 都当成功，于是界面谎报"已打开"。
+      const data = result.data || {}
+      const spawned = (result.status === 204 || result.status === 200) && data.ok !== false
+      if (spawned) {
+        return sendJson(res, 200, { ok: true, status: result.status, note: '已在全屏窗口打开可视化面板' })
+      }
+      // 兜底：向桥接要一个带 token 的地址，交给前端去开
+      const fallback = await bridgeFetch('/panel-url', {}, 4000)
+      const url = String(fallback.data?.url || data.url || '')
+      if (!url) {
+        const why = data.error || data.reason || ('HTTP ' + result.status)
+        return sendJson(res, 502, { ok: false, error: '桥接没能打开面板窗口（' + why + '），也没拿到可用的地址' })
+      }
+      return sendJson(res, 200, { ok: true, url, note: '桥接没能自己弹窗，已给出地址' })
     }
 
     return sendJson(res, 400, { ok: false, error: `不认识的动作：${action}` })

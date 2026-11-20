@@ -5810,7 +5810,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
       // /api/boot/card 是开机片头读的一张只读小卡（记忆数/心情/压力/最在意），
       // 由 DSH 的插件在宿主进程里来取；它跑在另一个进程里，拿不到控制台令牌。
       // 内容只在本机回环可读，且不含 QQ 号，所以放进免令牌白名单。
-      const publicMedia = (req.method === 'GET' && (url.pathname.startsWith('/media/') || url.pathname === '/panel' || url.pathname === '/open-panel' || url.pathname === '/ping' || url.pathname === '/diag' || url.pathname === '/desk/status' || url.pathname === '/desk/toggle' || url.pathname === '/open-memory'
+      const publicMedia = (req.method === 'GET' && (url.pathname.startsWith('/media/') || url.pathname === '/panel' || url.pathname === '/open-panel' || url.pathname === '/panel-url' || url.pathname === '/ping' || url.pathname === '/diag' || url.pathname === '/desk/status' || url.pathname === '/desk/toggle' || url.pathname === '/open-memory'
           || url.pathname === '/open-space'
           || url.pathname === '/open-stickers'
           || url.pathname === '/panel-exit' || url.pathname === '/panel-close' || url.pathname === '/api/boot/card'))
@@ -8939,6 +8939,21 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           return;
         }
 
+        // 只回一个带 token 的面板地址。插件在自己开不了窗口时用它兜底，
+        // 让用户至少能点链接在浏览器里看，而不是"点了没反应"。
+        if (req.method === 'GET' && url.pathname === '/panel-url') {
+          try {
+            const pt = loadOrCreateConsoleToken();
+            const panelUrl = 'http://127.0.0.1:' + (cfg.port || 3100) + '/dashboard?token=' + encodeURIComponent(pt);
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(JSON.stringify({ ok: true, url: panelUrl }));
+          } catch (e) {
+            res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) }));
+          }
+          return;
+        }
+
         if (req.method === 'GET' && url.pathname === '/open-panel') {
           try {
             // 已经有面板窗口：只把它提到最前，不再叠一个新的
@@ -8978,8 +8993,11 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
               res.writeHead(204, { 'cache-control': 'no-store' });
               res.end();
             } else {
-              res.writeHead(302, { location: url });
-              res.end();
+              // 找不到 Edge/Chrome 时以前回 302，指望调用方浏览器跟着跳。
+              // 但插件是在 Node 里 fetch 的，服务器端会把 302 走完、拿到 200，
+              // 于是界面报"已打开"而用户屏幕上什么都没有。改成回明确的 JSON。
+              res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+              res.end(JSON.stringify({ ok: false, reason: 'no-browser', url }));
             }
           } catch (e) {
             res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });

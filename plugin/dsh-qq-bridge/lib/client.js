@@ -297,8 +297,17 @@ window.__ModuleLoader__.load({
         setMsg('')
         post(BASE + '/action', Object.assign({ action }, extra))
           .then((result) => {
-            const ok = result.ok && result.data && result.data.ok !== false
-            setMsg(ok ? (action === 'restart' ? '已开始重启，大约 10~15 秒。' : label + '成功。') : '失败：' + ((result.data && result.data.error) || result.status))
+            const data = result.data || {}
+            const ok = result.ok && data.ok !== false
+            // 桥接没能自己弹窗时会回一个带 token 的地址：这里直接新开标签，
+            // 并把地址摆出来（开不出来还能手动粘）。以前这种情况是"点了没反应"。
+            if (data.url) {
+              let opened = false
+              try { opened = Boolean(window.open(data.url, '_blank', 'noopener')) } catch (error) { opened = false }
+              setMsg((opened ? '已在新标签打开' : '没能自动打开') + '，也可以手动访问：' + data.url)
+              return
+            }
+            setMsg(ok ? (action === 'restart' ? '已开始重启，大约 10~15 秒。' : label + '成功。') : '失败：' + (data.error || result.status))
           })
           .catch((error) => setMsg('失败：' + String(error && error.message ? error.message : error)))
           .finally(() => setBusy(''))
