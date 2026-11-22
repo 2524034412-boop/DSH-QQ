@@ -1046,7 +1046,7 @@ function loadConfig() {
       surrenderProbability: 0,        // 已弃用：桥接不再直接生成退让短句（避免割裂），保留字段兼容旧配置
       // 摘要与展示
       maxReplyChars: 500,             // 单条 QQ 消息安全长度上限（防 AI 出 bug；分句交给 AI 用空格控制）
-      mustReplyKeywords: ['deepseek', '小鲸鱼', '大肥鱼', '鲸鱼', 'd指导', '在吗'],
+      mustReplyKeywords: ['deepseek', '小鲸鱼', '鲸鱼', 'd指导', '在吗'],
       // 真人式多消息分条发送：按空格分句，AI 用空格表示“这里要分成下一条”
       burstEnabled: true,             // 总开关：是否允许按空格拆成多条 QQ 消息
       burstIntervalMinMs: 1000,       // 条间随机间隔下限（毫秒）
@@ -1115,7 +1115,7 @@ function loadConfig() {
         recommendedSleepMinMs: 300000,
         recommendedSleepMaxMs: 7200000,
         recommendedProbability: 0.05,
-        recommendedKeywords: ['小鲸鱼', 'DeepSeek', 'deepseek', 'DS', 'D老师', 'd老师', 'D指导', 'd指导', 'D师傅', 'd师傅', '深度求索', '大肥鱼', '鲸鱼', 'DeepSeek V3', 'DeepSeek R1', 'R1'],
+        recommendedKeywords: ['小鲸鱼', 'DeepSeek', 'deepseek', 'DS', 'D老师', 'd老师', 'D指导', 'd指导', 'D师傅', 'd师傅', '深度求索', '鲸鱼', 'DeepSeek V3', 'DeepSeek R1', 'R1'],
         recommendedAtMention: true,
         recommendedNameMention: true,
         recommendedQuestion: true,
@@ -4263,6 +4263,7 @@ async function main() {
 
   // ── 通用 OneBot HTTP 调用（群文件等只读工具用） ──────────────────────────────
   async function onebotCall(action, params = {}, timeoutMs = 15000) {
+    try { mindSay('probe', String(action || '')); } catch {}
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
     const res = await fetch(`${httpUrl}/${action}`, {
       method: 'POST',
@@ -4979,7 +4980,7 @@ ${bootMarkup}
   </section>
   <section class="wide"><h2>她自己拿的主意 · 今天</h2>
     <div class="muted small" style="margin:2px 0 8px">${escHtml(autonomyPanelText())}</div>
-    <div class="muted small">这三样都是她自己的决定：有没有安排今天、有没有拒绝过什么、有没有留点不告诉人的东西。</div>
+    <div class="muted small">这些都是她自己的决定：有没有安排今天、有没有拒绝过什么、有没有留点不告诉人的东西、空下来的时候有没有干点什么。</div>
   </section>
   <section><h2>服务状态</h2>${svc}</section>
   <section><h2>记忆结构</h2>${memBar}<div class="legend"><span><b style="background:#d7b698"></b>核心 ${core}</span><span><b style="background:#9db8da"></b>长期 ${long}</span><span><b style="background:#90b8ad"></b>短期 ${short}</span></div><div class="muted small" style="margin-top:24px">短期记忆 · 最近 ${Math.min(4, short)} 条</div><ul class="mini">${mem.filter((e) => normalizeTier(e.tier) === 'short').slice(-4).map((e) => `<li>${escHtml(e.text).slice(0, 60)}</li>`).join('') || '<li class="muted">暂无短期记忆</li>'}</ul></section>
@@ -5681,6 +5682,9 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     };
     // 二代会话工具必须仍命中当前模式的白名单/准入；避免白名单移除后旧 agentToken 继续读状态。
     const v2SessionAllowed = isSessionAllowedInCurrentMode;
+
+
+
     const server = http.createServer(async (req, res) => {
       let url;
       try { url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`); }
@@ -5713,6 +5717,24 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...SECURITY_HEADERS });
         res.end(JSON.stringify(obj, null, 2));
       };
+
+      // ── 统一守卫 ────────────────────────────────────────────────────────────
+      // 以前每个 v2 路由都手写一遍「令牌有效 + 会话在允许范围 + 工具已启用」，
+      // 一共 117 行重复代码。漏写一处就是一个没受保护的接口，所以收成一个入口。
+      // 返回 true = 已经被拦下（调用方直接 return）。
+      function guardAgent(req, res, key) {
+        const tok = req.headers['x-agent-token'];
+        if (!tok) return false;                       // 控制台调用，不走智能体这条路
+        if (!agentTokenOk(key, tok)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return true; }
+        if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
+        return false;
+      }
+      function guardTool(req, res, tool, label) {
+        if (!req.headers['x-agent-token']) return false;
+        if (!v2ToolEnabled(tool)) { sendJson({ ok: false, error: '工具未启用：' + (label || tool) }, 403); return true; }
+        return false;
+      }
+
       const readBody = () => new Promise((resolve, reject) => {
         const MAX_BODY_BYTES = 1_000_000;
         const chunks = [];
@@ -5810,7 +5832,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
       // /api/boot/card 是开机片头读的一张只读小卡（记忆数/心情/压力/最在意），
       // 由 DSH 的插件在宿主进程里来取；它跑在另一个进程里，拿不到控制台令牌。
       // 内容只在本机回环可读，且不含 QQ 号，所以放进免令牌白名单。
-      const publicMedia = (req.method === 'GET' && (url.pathname.startsWith('/media/') || url.pathname === '/panel' || url.pathname === '/open-panel' || url.pathname === '/panel-url' || url.pathname === '/ping' || url.pathname === '/diag' || url.pathname === '/desk/status' || url.pathname === '/desk/toggle' || url.pathname === '/open-memory'
+      const publicMedia = (req.method === 'GET' && (url.pathname.startsWith('/media/') || url.pathname === '/panel' || url.pathname === '/open-panel' || url.pathname === '/panel-url' || url.pathname === '/api/mind/live' || url.pathname === '/ping' || url.pathname === '/diag' || url.pathname === '/desk/status' || url.pathname === '/desk/toggle' || url.pathname === '/open-memory'
           || url.pathname === '/open-space'
           || url.pathname === '/open-stickers'
           || url.pathname === '/panel-exit' || url.pathname === '/panel-close' || url.pathname === '/api/boot/card'))
@@ -5981,6 +6003,39 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const r = await maybeIdleThinking({ force: body.force === true });
           sendJson({ ok: true, ...r, state: loadThoughtState() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/debug/group-topic') {
+          const body = await readBody();
+          const r = await maybeGroupTopic({ force: body.force === true, dry: body.dry === true });
+          sendJson({ ok: true, ...r, state: loadGroupPick() });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/debug/group-topic') {
+          sendJson({ ok: true, state: loadGroupPick() });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/debug/probe') {
+          // 预览下一次试探会用什么形式（不消耗次数、不写状态）
+          const k = String(url.searchParams.get('key') || ('private:' + String(cfg.ownerQQ ?? '')));
+          sendJson({ ok: true, key: k, line: romanceProbeLine(k, true) });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/debug/romance-tick') {
+          // 手动推进一次恋爱状态机（幂等）；不 force 也照样跑，条件不满足就什么都不发生
+          const r = await romanceTick();
+          sendJson({ ok: true, ...r, state: loadRomance(), cfg: romanceCfg(), panel: romancePanelText() });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/debug/romance-state') {
+          sendJson({ ok: true, state: loadRomance(), cfg: romanceCfg(), panel: romancePanelText() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/debug/bored') {
+          // 立刻递一次"闲下来"的邀请（不强迫，她可以什么都不干）
+          const body = await readBody();
+          const r = await maybeBoredNudge({ force: body.force === true });
+          sendJson({ ok: true, ...r, state: loadBored() });
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/debug/romance') {
@@ -7801,9 +7856,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/state') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('socialState')) { sendJson({ ok: false, error: '工具未启用：qq_social_state' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'socialState', 'qq_social_state')) return;
           const st = getSocialV2State(key);
           sendJson({
             ok: true,
@@ -7820,9 +7874,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/prompt') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('getPrompt')) { sendJson({ ok: false, error: '工具未启用：qq_get_prompt' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'getPrompt', 'qq_get_prompt')) return;
           const st = getSocialV2State(key);
           // 让 prompt 里的表情摘要尽量新鲜：按 TTL 同步一次 QQ 收藏表情（失败不阻塞）。
           if (cfg.socialV2?.sticker?.enabled !== false) {
@@ -7944,9 +7997,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(url.searchParams.get('key') ?? '').trim();
           const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 30));
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('getUnread')) { sendJson({ ok: false, error: '工具未启用：qq_get_unread_messages' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'getUnread', 'qq_get_unread_messages')) return;
           const afterRaw = url.searchParams.get('afterSeq');
           const afterSeq = afterRaw === null ? null : Number(afterRaw);
           if (afterRaw !== null && (!/^\d+$/.test(afterRaw) || !Number.isSafeInteger(afterSeq) || afterSeq < 0)) {
@@ -7967,9 +8019,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 20));
           const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('getRecent')) { sendJson({ ok: false, error: '工具未启用：qq_get_recent_messages' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'getRecent', 'qq_get_recent_messages')) return;
           const st = getSocialV2State(key);
           const start = Math.max(0, st.recentMessages.length - offset - limit);
           const end = Math.max(0, st.recentMessages.length - offset);
@@ -7982,9 +8033,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/environment') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('environment')) { sendJson({ ok: false, error: '工具未启用：qq_environment' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'environment', 'qq_environment')) return;
           const envCfg = cfg.environment ?? {};
           const reading = readEnvironment();
           const hours = Math.min(168, Math.max(1, Number(url.searchParams.get('hours')) || 24));
@@ -8009,9 +8059,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('markRead')) { sendJson({ ok: false, error: '工具未启用：qq_mark_read' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'markRead', 'qq_mark_read')) return;
           const st = getSocialV2State(key);
           // 注意：不带 throughSeq 的调用会清空全部未读，这是**有意保留的兼容语义**
           // （旧 preset 与「没有水位」的收尾调用；见 acknowledgeMessagesV2 的注释与
@@ -8051,9 +8100,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('setWakeConfig')) { sendJson({ ok: false, error: '工具未启用：qq_set_wake_config' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'setWakeConfig', 'qq_set_wake_config')) return;
           const st = getSocialV2State(key);
           const throughSeq = requestedReadThroughSeqV2(st, body, !!req.headers['x-agent-token']);
           // Preserve the deployed behavior: with markRead disabled, update wake configuration only.
@@ -8336,9 +8384,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             sendJson({ ok: false, error: '已禁用多条发送，请合并为一条消息' }, 403);
             return;
           }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('sendBurst')) { sendJson({ ok: false, error: '工具未启用：qq_send_burst' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'sendBurst', 'qq_send_burst')) return;
           if (currentMode !== 'reserved2') {
             sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403);
             return;
@@ -8465,9 +8512,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             sendJson({ ok: false, error: '已禁用多条发送，请合并为一条消息' }, 403);
             return;
           }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('sendMessage')) { sendJson({ ok: false, error: '工具未启用：qq_send_message' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'sendMessage', 'qq_send_message')) return;
           if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
           if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
@@ -8681,9 +8727,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(url.searchParams.get('key') ?? '').trim();
           const stickerId = String(url.searchParams.get('stickerId') ?? '').trim();
           if (!key || !stickerId) { sendJson({ ok: false, error: 'key 和 stickerId 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('getStickerImage')) { sendJson({ ok: false, error: '工具未启用：qq_get_sticker_image' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'getStickerImage', 'qq_get_sticker_image')) return;
           try {
             const entry = await getStickerImageData(stickerId);
             const fetched = await safeFetchBuffer(entry.url, MAX_MEDIA_BYTES);
@@ -8714,9 +8759,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/self-image') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('getSelfImage')) { sendJson({ ok: false, error: '工具未启用：qq_get_self_image' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'getSelfImage', 'qq_get_self_image')) return;
           const selfPath = path.join(ROOT, 'assets', 'deepseek娘.png');
           try {
             if (!fs.existsSync(selfPath)) { sendJson({ ok: false, error: '未找到 AI 形象图片 assets/deepseek娘.png' }, 404); return; }
@@ -8734,9 +8778,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           const stickerId = String(body.stickerId ?? '').trim();
           if (!key || !stickerId) { sendJson({ ok: false, error: 'key 和 stickerId 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('stickerNote')) { sendJson({ ok: false, error: '工具未启用：qq_sticker_note' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'stickerNote', 'qq_sticker_note')) return;
           const note = body.note !== undefined && body.note !== null ? String(body.note).trim().slice(0, 200) : undefined;
           const tags = body.tags !== undefined && body.tags !== null ? (Array.isArray(body.tags) ? body.tags.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 20) : []) : undefined;
           const usage = body.usage !== undefined && body.usage !== null ? String(body.usage).trim().slice(0, 200) : undefined;
@@ -8752,9 +8795,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           const stickerId = String(body.stickerId ?? '').trim();
           if (!key || !stickerId) { sendJson({ ok: false, error: 'key 和 stickerId 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('setStickerRemark')) { sendJson({ ok: false, error: '工具未启用：qq_set_sticker_remark' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'setStickerRemark', 'qq_set_sticker_remark')) return;
           try {
             const entry = await setStickerRemarkV2(stickerId, String(body.remark ?? ''));
             log(`[sticker] 修改 QQ 收藏表情备注 ${key}: ${entry.id} -> ${entry.desc}`);
@@ -8960,6 +9002,17 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
 
         // 只回一个带 token 的面板地址。插件在自己开不了窗口时用它兜底，
         // 让用户至少能点链接在浏览器里看，而不是"点了没反应"。
+        if (req.method === 'GET' && url.pathname === '/api/mind/live') {
+          // 只回「她现在走到哪一步」，不含任何聊天内容；给 DSH 面板右下角的小灯用
+          try {
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+            res.end(JSON.stringify({ ok: true, ...mindRead() }));
+          } catch (e) {
+            res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*' });
+            res.end(JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) }));
+          }
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/panel-url') {
           try {
             const pt = loadOrCreateConsoleToken();
@@ -9231,9 +9284,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('say')) { sendJson({ ok: false, error: '工具未启用：qq_say' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'say', 'qq_say')) return;
           try {
             const vc = voiceCfg();
             if (!vc.enabled) { sendJson({ ok: false, error: '语音功能已关闭（socialV2.voice.enabled=false）' }, 403); return; }
@@ -9390,9 +9442,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             sendJson({ ok: false, error: '表情消息不能附带文字；请先用 qq_send_message / qq_reply 把想说的话作为单独气泡发送，再单独 qq_send_sticker 发表情' }, 400);
             return;
           }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('sendSticker')) { sendJson({ ok: false, error: '工具未启用：qq_send_sticker' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'sendSticker', 'qq_send_sticker')) return;
           if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
           if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
@@ -9486,9 +9537,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('sendSelfie')) { sendJson({ ok: false, error: '工具未启用：qq_send_selfie' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'sendSelfie', 'qq_send_selfie')) return;
           if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
           if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
@@ -9543,9 +9593,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const messageRef = String(body.messageId ?? body.seq ?? '').trim();
           const remark = String(body.remark ?? '').trim();
           if (!key || !messageRef) { sendJson({ ok: false, error: 'key 和 messageId/seq 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('collectSticker')) { sendJson({ ok: false, error: '工具未启用：qq_collect_sticker' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'collectSticker', 'qq_collect_sticker')) return;
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
           const st = getSocialV2State(key);
@@ -9640,9 +9689,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           // 需要强制同步时请用同一路径的 POST，或控制台的 POST /api/stickers/sync。
           const force = false;
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('listStickers')) { sendJson({ ok: false, error: '工具未启用：qq_list_stickers' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'listStickers', 'qq_list_stickers')) return;
           try {
             const synced = await syncStickerLibrary(force);
             const list = formatStickerList(synced?.entries ?? stickerEntries, query, count);
@@ -9661,9 +9709,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const count = Math.min(500, Math.max(1, Math.min(Number(body.count) || 48, maxCount)));
           let force = body.refresh === true;
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('listStickers')) { sendJson({ ok: false, error: '工具未启用：qq_list_stickers' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'listStickers', 'qq_list_stickers')) return;
           // AI 强制刷新加最小间隔，避免反复调用 OneBot 表情接口造成限频/负载。
           if (req.headers['x-agent-token'] && force) {
             const now = Date.now();
@@ -9736,9 +9783,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
             return;
           }
           const replyWait = body.purpose === 'reply';
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('waitMessages')) { sendJson({ ok: false, error: '工具未启用：qq_wait_for_messages' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'waitMessages', 'qq_wait_for_messages')) return;
           if (socialV2.paused) {
             const st = getSocialV2State(key);
             sendJson({ ok: true, key, paused: true, arrived: false, timeout: false, waitedMs: 0, newMessages: [], readThroughSeq: readThroughSeqV2(st), unreadCount: st.unread.length });
@@ -10034,9 +10080,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const level = body.level === 'warning' || body.level === 'error' ? body.level : 'info';
           const rawMessage = String(body.message ?? '').trim();
           if (!key || !rawMessage) { sendJson({ ok: false, error: 'key 和 message 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('feedback')) { sendJson({ ok: false, error: '工具未启用：qq_report_feedback' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'feedback', 'qq_report_feedback')) return;
           // 反馈限频：防止持有会话 token 的调用方刷磁盘/日志。
           const fNow = Date.now();
           const fTimes = feedbackTimes.get(key) || [];
@@ -10063,9 +10108,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(url.searchParams.get('key') ?? '').trim();
           const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit')) || 10));
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('getMyRecent')) { sendJson({ ok: false, error: '工具未启用：qq_get_my_recent_messages' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'getMyRecent', 'qq_get_my_recent_messages')) return;
           const st = getSocialV2State(key);
           const mine = st.recentMessages.filter((m) => m.isSelf).slice(-limit);
           sendJson({ ok: true, key, messages: mine, readThroughSeq: readThroughSeqV2(st) });
@@ -10080,9 +10124,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(url.searchParams.get('key') ?? '').trim();
           const messageId = String(url.searchParams.get('messageId') ?? '').trim();
           if (!key || !messageId) { sendJson({ ok: false, error: 'key 和 messageId 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('getMessageDetail')) { sendJson({ ok: false, error: '工具未启用：qq_get_message_detail' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'getMessageDetail', 'qq_get_message_detail')) return;
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
           const kind = keyMatch[1];
@@ -10224,9 +10267,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           const media = Array.isArray(body.media) ? body.media : [];
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('getForwardMsg')) { sendJson({ ok: false, error: '工具未启用：qq_get_forward_msg' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'getForwardMsg', 'qq_get_forward_msg')) return;
           if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '转发媒体读取仅 reserved2 模式可用' }, 403); return; }
           if (!media.length) { sendJson({ ok: true, key, media: [], images: [] }); return; }
           try {
@@ -10242,9 +10284,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(url.searchParams.get('key') ?? '').trim();
           const limit = Math.min(20, Math.max(1, Number(url.searchParams.get('limit')) || 10));
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('getActiveMembers')) { sendJson({ ok: false, error: '工具未启用：qq_get_active_members' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'getActiveMembers', 'qq_get_active_members')) return;
           const st = getSocialV2State(key);
           const map = new Map();
           for (const m of st.recentMessages) {
@@ -10271,9 +10312,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           if (!key || !category || !content) { sendJson({ ok: false, error: 'key/category/content 不能为空' }, 400); return; }
           if (!['activeTopic', 'pendingThought', 'memberImpression'].includes(category)) { sendJson({ ok: false, error: 'category 必须是 activeTopic / pendingThought / memberImpression' }, 400); return; }
           if (category === 'memberImpression' && !String(extra.target || '').trim()) { sendJson({ ok: false, error: 'memberImpression 需要 extra.target 指定群友名字' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_append' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'memory', 'qq_memory_append')) return;
           const st = getSocialV2State(key);
           appendMemoryV2(st, category, content, extra);
           sendJson({ ok: true, key, category, content, memory: formatMemoryV2(st) });
@@ -10299,9 +10339,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           if (!['activeTopic', 'pendingThought', 'memberImpression'].includes(category)) { sendJson({ ok: false, error: 'category 必须是 activeTopic / pendingThought / memberImpression' }, 400); return; }
           if (category === 'memberImpression' && !target) { sendJson({ ok: false, error: 'memberImpression 需要 target 指定原群友名字' }, 400); return; }
           if (category !== 'memberImpression' && !oldContent) { sendJson({ ok: false, error: '该类别需要 oldContent 指定要编辑的记忆内容' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_*' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'memory', 'qq_memory_*')) return;
           const st = getSocialV2State(key);
           if (category === 'activeTopic' && Array.isArray(st.activeTopics)) {
             const idx = st.activeTopics.findIndex((t) => String(t?.text ?? '') === oldContent);
@@ -10350,9 +10389,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(url.searchParams.get('key') ?? '').trim();
           const category = String(url.searchParams.get('category') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_query' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'memory', 'qq_memory_query')) return;
           const st = getSocialV2State(key);
           const raw = {
             activeTopics: Array.isArray(st.activeTopics) ? st.activeTopics.slice(-20) : [],
@@ -10383,9 +10421,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           if (category === 'memberImpression' && !target) { sendJson({ ok: false, error: 'memberImpression 需要 target 指定群友名字' }, 400); return; }
           if (category === 'memberImpression' && ['__proto__', 'constructor', 'prototype'].includes(target)) { sendJson({ ok: false, error: '非法的群友名字' }, 400); return; }
           if (category !== 'memberImpression' && !content) { sendJson({ ok: false, error: '该类别需要 content 指定要删除的记忆内容' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_remove' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'memory', 'qq_memory_remove')) return;
           const st = getSocialV2State(key);
           if (category === 'activeTopic' && Array.isArray(st.activeTopics)) {
             st.activeTopics = st.activeTopics.filter((t) => String(t?.text ?? '') !== content);
@@ -10404,9 +10441,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const category = String(body.category ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
           if (category && !['activeTopic', 'pendingThought', 'memberImpression'].includes(category)) { sendJson({ ok: false, error: 'category 必须是 activeTopic / pendingThought / memberImpression' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_clear' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'memory', 'qq_memory_clear')) return;
           const st = getSocialV2State(key);
           if (!category || category === 'activeTopic') st.activeTopics = [];
           if (!category || category === 'pendingThought') st.pendingThoughts = [];
@@ -10422,9 +10458,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const text = String(body.text ?? '').trim();
           const tags = Array.isArray(body.tags) ? body.tags : [];
           if (!key || !text) { sendJson({ ok: false, error: 'key/text 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('remember')) { sendJson({ ok: false, error: '工具未启用：qq_remember' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'remember', 'qq_remember')) return;
           try {
             const entry = globalMemoryAppend({ text, tags, key, tier: body.tier, ttlDays: body.ttlDays });
             sendJson({ ok: true, entry, total: loadGlobalMemory().entries.length });
@@ -10437,9 +10472,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('recall')) { sendJson({ ok: false, error: '工具未启用：qq_recall' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'recall', 'qq_recall')) return;
           const result = globalMemoryQuery({ query: body.query, limit: body.limit, tier: body.tier });
           sendJson({ ok: true, ...result });
           return;
@@ -10448,9 +10482,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('forget')) { sendJson({ ok: false, error: '工具未启用：qq_forget' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'forget', 'qq_forget')) return;
           try {
             const result = globalMemoryRemove({ id: body.id, text: body.text });
             sendJson({ ok: true, ...result });
@@ -10465,9 +10498,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           const summary = String(body.summary ?? '').trim();
           if (!key || !summary) { sendJson({ ok: false, error: 'key/summary 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('newSession')) { sendJson({ ok: false, error: '工具未启用：qq_new_session' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'newSession', 'qq_new_session')) return;
           const last = Number(sessionRotateTimes.get(key)) || 0;
           if (Date.now() - last < 30 * 60 * 1000) {
             sendJson({ ok: false, error: '刚换过会话，30 分钟内不要连续换' }, 429);
@@ -10488,9 +10520,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           const content = String(body.content ?? '').trim();
           if (!key || !content) { sendJson({ ok: false, error: 'key/content 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('handover')) { sendJson({ ok: false, error: '工具未启用：qq_handover' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'handover', 'qq_handover')) return;
           try {
             const saved = saveHandover(key, content);
             sendJson({ ok: true, key, ...saved });
@@ -10502,8 +10533,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/handover') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
           sendJson({ ok: true, key, content: loadHandover(key) });
           return;
         }
@@ -10511,9 +10541,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/balance') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('balance')) { sendJson({ ok: false, error: '工具未启用：qq_balance' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'balance', 'qq_balance')) return;
           const bal = await fetchDeepseekBalance();
           sendJson({
             ok: true,
@@ -10532,7 +10561,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const groupId = Number(gm[1]);
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (!v2SessionAllowed(key) || !allowed('group', groupId, cfg)) { sendJson({ ok: false, error: '该群不在白名单内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('groupFiles')) { sendJson({ ok: false, error: '工具未启用：qq_group_files' }, 403); return; }
+          if (guardTool(req, res, 'groupFiles', 'qq_group_files')) return;
           try {
             const [sys, listing] = await Promise.all([
               onebotCall('get_group_file_system_info', { group_id: groupId }).catch(() => null),
@@ -10571,7 +10600,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const groupId = Number(gm[1]);
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (!v2SessionAllowed(key) || !allowed('group', groupId, cfg)) { sendJson({ ok: false, error: '该群不在白名单内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('groupFiles')) { sendJson({ ok: false, error: '工具未启用：qq_group_file_read' }, 403); return; }
+          if (guardTool(req, res, 'groupFiles', 'qq_group_file_read')) return;
           try {
             const link = await onebotCall('get_group_file_url', { group_id: groupId, file_id: fileId, busid });
             const fileUrl = link?.url;
@@ -10606,9 +10635,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/mood') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('mood')) { sendJson({ ok: false, error: '工具未启用：qq_mood' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'mood', 'qq_mood')) return;
           sendJson({ ok: true, key, mood: getMood(key), longMood: getLongMood(key), available: MOOD_EMOTIONS });
           return;
         }
@@ -10616,9 +10644,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('mood')) { sendJson({ ok: false, error: '工具未启用：qq_mood' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'mood', 'qq_mood')) return;
           try {
             const mood = setMood(key, { emotion: body.emotion, intensity: body.intensity, reason: body.reason, term: body.term });
             sendJson({ ok: true, key, mood, longMood: getLongMood(key) });
@@ -10630,9 +10657,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/affinity') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('affinity')) { sendJson({ ok: false, error: '工具未启用：qq_affinity' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'affinity', 'qq_affinity')) return;
           sendJson({ ok: true, key, people: affinityRowsFor(key) });
           return;
         }
@@ -10642,9 +10668,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           const target = String(body.target ?? '').trim();
           if (!key || !target) { sendJson({ ok: false, error: 'key/target 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('affinity')) { sendJson({ ok: false, error: '工具未启用：qq_affinity' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'affinity', 'qq_affinity')) return;
           try {
             const result = adjustAffinity(target, body.name, body.delta, body.reason);
             sendJson({ ok: true, key, ...result });
@@ -10741,9 +10766,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/events') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('events')) { sendJson({ ok: false, error: '工具未启用：qq_events' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'events', 'qq_events')) return;
           const q = String(url.searchParams.get('q') ?? '');
           const kind = String(url.searchParams.get('kind') ?? '');
           const limit = Number(url.searchParams.get('limit')) || 15;
@@ -10754,9 +10778,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('events')) { sendJson({ ok: false, error: '工具未启用：qq_events' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'events', 'qq_events')) return;
           try {
             const ev = addEvent({ key, kind: body.kind, who: body.who, what: body.what, importance: body.importance });
             if (!ev) { sendJson({ ok: false, error: 'what 不能为空' }, 400); return; }
@@ -10769,9 +10792,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/transcript') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('transcript')) { sendJson({ ok: false, error: '工具未启用：qq_transcript' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'transcript', 'qq_transcript')) return;
           const days = Math.min(14, Math.max(1, Number(url.searchParams.get('days')) || 1));
           const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 40));
           const rows = readTranscript(key, { days, limit });
@@ -10782,9 +10804,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('transcript')) { sendJson({ ok: false, error: '工具未启用：qq_transcript' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'transcript', 'qq_transcript')) return;
           const note = addTrNote(key, { refAt: body.refAt, refText: body.refText, note: body.note });
           if (!note) { sendJson({ ok: false, error: '批注失败' }, 400); return; }
           sendJson({ ok: true, note });
@@ -10940,7 +10961,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('reading')) { sendJson({ ok: false, error: '工具未启用：qq_reading_note' }, 403); return; }
+          if (guardTool(req, res, 'reading', 'qq_reading_note')) return;
           const r = readingForSpace();
           if (!r.book || !r.book.id) { sendJson({ ok: false, error: '现在没有在读的书（书架上还没有记录）' }, 400); return; }
           const text = String(body.text ?? '').trim().slice(0, 500);
@@ -10988,7 +11009,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('space')) { sendJson({ ok: false, error: '工具未启用：qq_space_go' }, 403); return; }
+          if (guardTool(req, res, 'space', 'qq_space_go')) return;
           // 地方必须在房间表里（label 或别名都行），并规范化成 label ——
           // 她说「沙发」，存的是「客厅」；以后改别名也不会让历史状态对不上。
           const index = loadRoomIndex(path.join(ROOT, 'public', 'space', 'rooms.json'));
@@ -11035,9 +11056,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/bili-items') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('bili')) { sendJson({ ok: false, error: '工具未启用：qq_bili_priority' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'bili', 'qq_bili_priority')) return;
           const items = biliItemsScored().map((i) => ({ bv: i.bv, title: i.title, up: i.up, plays: i.plays, takeaway: i.takeaway, url: i.url, score: i.score, rated: i.rated }));
           sendJson({ ok: true, key, count: items.length, items });
           return;
@@ -11047,9 +11067,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           const bv = String(body.bv ?? '').trim();
           if (!key || !bv) { sendJson({ ok: false, error: 'key/bv 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('bili')) { sendJson({ ok: false, error: '工具未启用：qq_bili_priority' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'bili', 'qq_bili_priority')) return;
           try {
             const level = setBiliPriority(bv, body.level);
             sendJson({ ok: true, key, bv, level });
@@ -11062,9 +11081,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/group-scores') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('groupScores')) { sendJson({ ok: false, error: '工具未启用：qq_group_scores' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'groupScores', 'qq_group_scores')) return;
           sendJson({
             ok: true,
             key,
@@ -11079,9 +11097,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const groupKey = String(body.groupKey ?? '').trim();
           if (!key || !groupKey) { sendJson({ ok: false, error: 'key/groupKey 不能为空' }, 400); return; }
           if (!/^group:\d+$/.test(groupKey)) { sendJson({ ok: false, error: 'groupKey 必须是 group:群号' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('groupScores')) { sendJson({ ok: false, error: '工具未启用：qq_group_scores' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'groupScores', 'qq_group_scores')) return;
           const e = groupStatEntry(groupKey);
           e.bonus = Math.max(-20, Math.min(20, Number(body.bonus) || 0));
           e.updatedAt = Date.now();
@@ -11093,9 +11110,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
         if (req.method === 'GET' && url.pathname === '/api/socialV2/impression') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('impression')) { sendJson({ ok: false, error: '工具未启用：qq_impression' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'impression', 'qq_impression')) return;
           sendJson({ ok: true, key, people: impressionRowsFor(key) });
           return;
         }
@@ -11104,9 +11120,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(body.key ?? '').trim();
           const target = String(body.target ?? '').trim();
           if (!key || !target) { sendJson({ ok: false, error: 'key/target 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('impression')) { sendJson({ ok: false, error: '工具未启用：qq_impression' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'impression', 'qq_impression')) return;
           try {
             const entry = setImpression(target, body.name, body.text, body.sentiment, {
               traits: body.traits,
@@ -11124,9 +11139,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(url.searchParams.get('key') ?? '').trim();
           const target = String(url.searchParams.get('target') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('relation')) { sendJson({ ok: false, error: '工具未启用：qq_relation' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'relation', 'qq_relation')) return;
           sendJson({ ok: true, key, relations: target ? relationsOf(target) : [], kinds: RELATION_KINDS });
           return;
         }
@@ -11134,9 +11148,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const body = await readBody();
           const key = String(body.key ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('relation')) { sendJson({ ok: false, error: '工具未启用：qq_relation' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'relation', 'qq_relation')) return;
           try {
             const entry = setRelation(body.from, body.to, body.kind, body.note);
             sendJson({ ok: true, key, relation: entry });
@@ -11151,9 +11164,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const key = String(url.searchParams.get('key') ?? '').trim();
           const q = String(url.searchParams.get('q') ?? '').trim().toLowerCase();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('slangQuery')) { sendJson({ ok: false, error: '工具未启用：qq_slang_query' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'slangQuery', 'qq_slang_query')) return;
           const list = confirmedSlangListV2().filter((e) => {
             if (!q) return true;
             return e.content.toLowerCase().includes(q)
@@ -11177,9 +11189,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
           const content = redactKnownTokensOnly(String(body.content ?? '')).trim();
           const context = redactKnownTokensOnly(String(body.context ?? '')).trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2ToolEnabled('slangSubmit')) { sendJson({ ok: false, error: '工具未启用：qq_slang_submit' }, 403); return; }
+          if (guardAgent(req, res, key)) return;
+          if (guardTool(req, res, 'slangSubmit', 'qq_slang_submit')) return;
           if (cfg.slang?.enabled === false) { sendJson({ ok: false, error: '黑话学习已关闭（slang.enabled=false）' }, 403); return; }
           if (!content) { sendJson({ ok: false, error: 'content 不能为空' }, 400); return; }
           if (content.length > 50) { sendJson({ ok: false, error: '黑话词条过长（最多 50 字）' }, 400); return; }
@@ -11745,13 +11756,19 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
 
   // 打字停顿：真人回话不是零延迟。按字数给一点"正在打字"的时间，2~3 秒封顶。
   // 短句（1~3 字）约 1.2 秒：太快显得是机器在等，太慢显得没在听。
+  // 模拟打字的停顿：短句约 2 秒，长句往上走，封顶 4 秒——
+  // 原来 1.5~3 秒略快，像"秒回"；再长就假了，真人打字没这么久。
   function typingPauseMs(text) {
-    const chars = String(text || '').length;
-    const base = 1200 + chars * 70;
-    return Math.min(3000, Math.max(1500, base + randInt(0, 500)));
+    const chars = [...String(text || '')].length;
+    const base = 1200 + chars * 75;
+    return Math.min(4000, Math.max(2000, base + randInt(0, 600)));
   }
 
   function sendToQQ(key, msg) {
+    try { mindSay('send', String(msg || '').slice(0, 18)); } catch {}
+    try { mindLive.lastSendAt = Date.now(); } catch {}
+    try { notePursuitReply(key, msg); } catch {}
+    try { noteMisreadAsked(key, msg); } catch {}
     const assertSendAllowed = captureSendGuard(key);
     const safeMsg = redactKnownTokensOnly(msg);
     noteBiliShare(key, safeMsg);
@@ -13682,23 +13699,42 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
   let reflectSessionId = null;
   let lastReflectAt = 0;
 
-  function recentChatDigestForReflect(limit = 40) {
+  // 真实结构是 transcripts/<会话>/YYYY-MM-DD.jsonl（每会话一个子目录），
+  // 以前这里按扁平路径读，永远读不到东西——于是"反思"只能凭空写，
+  // 写出来自然像总结陈词。现在把所有会话按天合并、按时间排序。
+  function collectRecentChatRows(days = 2) {
+    const rows = [];
+    const base = path.join(STATE_DIR, 'transcripts');
+    const pad = (v) => String(v).padStart(2, '0');
+    let dirs = [];
     try {
-      const d = new Date();
-      const pad = (v) => String(v).padStart(2, '0');
-      const key = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-      const files = [key, `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate() - 1)}`];
-      const rows = [];
-      for (const k of files) {
+      dirs = fs.readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch { return rows; }
+    const keys = [];
+    for (let i = 0; i < Math.max(1, days); i++) {
+      const d = new Date(Date.now() - i * 86400000);
+      keys.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+    }
+    for (const dir of dirs) {
+      for (const k of keys) {
         try {
-          const raw = fs.readFileSync(path.join(STATE_DIR, 'transcripts', `${k}.jsonl`), 'utf8');
-          for (const line of raw.split('\n')) {
+          const raw2 = fs.readFileSync(path.join(base, dir, `${k}.jsonl`), 'utf8');
+          for (const line of raw2.split('\n')) {
             if (!line.trim()) continue;
-            try { rows.push(JSON.parse(line)); } catch {}
+            try { const r = JSON.parse(line); if (r) rows.push(r); } catch {}
           }
         } catch {}
       }
-      return rows.slice(-limit).map((r) => `${r.me ? '我' : String(r.s || '对方').slice(0, 8)}：${String(r.x || '').slice(0, 60)}`).join('\n');
+    }
+    rows.sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
+    return rows;
+  }
+  function recentChatDigestForReflect(limit = 40, days = 2) {
+    try {
+      const rows = collectRecentChatRows(days);
+      return rows.slice(-limit)
+        .map((r) => `${r.me ? '我' : String(r.s || '对方').slice(0, 8)}：${String(r.x || '').slice(0, 60)}`)
+        .join('\n');
     } catch {
       return '';
     }
@@ -13744,17 +13780,16 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
       const sessionId = await ensureReflectSession();
       const prompt = [
         '现在没人跟你说话，你自己待一会儿，回头看看刚才那些聊天。',
-        '下面是最近的对话摘录：',
+        '下面是最近真实的对话摘录（「我」是你，「对方」是别人）：',
         '---',
-        transcript || '（今天没什么聊天）',
+        transcript || '（今天确实没什么聊天，那就想想别的也行）',
         '---',
-        '写一段只给开发者看的自我反思，150 字以内，用你自己的口气，别客套也别夸自己：',
-        '① 今天哪一句最不像人（敷衍、端着、像客服、复读），原话点出来；',
-        '② 今天学到或想通了什么（关于人、关于聊天、关于这堆事）；',
-        '③ 下次想改的一件具体的事；',
-        '④ 今天从谁身上学到一种说话方式（举一个人的口头习惯，一句话）；',
-        '⑤ 给开发者的一句话建议（要不要改我的提示词、要不要改我的脾气，直说）。',
-        '不要发给任何人，也不要调用发消息的工具，直接写出来就行。'
+        '写几句话给自己。只给开发者看，不发给任何人，也别调用发消息的工具。',
+        '怎么写：就按你平时在群里说话的样子——短、口语、可以半句、可以带语气词。',
+        '不要编号、不要分点、不要小标题。',
+        '不要用「我学到」「我意识到」「这让我明白」「总的来说」开头，也不要每段都收成一句格言。',
+        '具体到某一句原话：谁说了什么、我当时怎么回的、要是重来我想怎么说。挑最想说的那一件写，别五条都写。',
+        '150 字以内。真没什么想说，就写一句「今天没什么好说的」，那也是真话。'
       ].join('\n');
       const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }] });
       if (!accepted?.result?.ok) throw new Error(accepted?.result?.error?.message || 'prompt rejected');
@@ -13805,9 +13840,14 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
     const biliText = readBiliDigestFile(yKey) || readBiliDigestFile(today);
     let chatText = '';
     try {
-      chatText = fs.readFileSync(path.join(STATE_DIR, 'transcripts', `${yKey}.jsonl`), 'utf8')
-        .split('\n').filter(Boolean).map((l) => { try { const r = JSON.parse(l); return `${r.me ? '我' : String(r.s || '对方').slice(0, 8)}：${String(r.x || '').slice(0, 60)}`; } catch { return null; } })
-        .filter(Boolean).slice(-80).join('\n');
+      // 同上：按会话目录收集，而不是扁平路径
+      const yRows = collectRecentChatRows(2).filter((r) => {
+        const d = new Date(Number(r.t) || 0);
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` === yKey;
+      });
+      chatText = yRows.slice(-80)
+        .map((r) => `${r.me ? '我' : String(r.s || '对方').slice(0, 8)}：${String(r.x || '').slice(0, 60)}`)
+        .join('\n');
     } catch {}
     if (!biliText && !chatText && !force) return null;
     try {
@@ -13849,6 +13889,17 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
   // 发呆不是闹钟任务：每 12 分钟看一眼条件（白天、没人在聊、今天还没想过两次）
   const idleThinkTimer = setInterval(() => { void maybeIdleThinking(); }, 12 * 60 * 1000);
   idleThinkTimer.unref?.();
+  // 每 20 分钟看一次"她是不是闲了"；递不递由 maybeBoredNudge 里的条件决定
+  const boredTimer = setInterval(() => { void maybeBoredNudge(); }, 10 * 60 * 1000);
+  // 恋爱状态机：每 20 分钟推进一次（幂等，条件不满足就什么都不做）
+  const romanceTimer = setInterval(() => { void romanceTick(); }, 20 * 60 * 1000);
+  romanceTimer.unref?.();
+  // 每半小时看一次"要不要去哪个群说句话"；她自己挑，不一定是被人叫醒的那个群
+  const groupTopicTimer = setInterval(() => { void maybeGroupTopic(); }, 30 * 60 * 1000);
+  groupTopicTimer.unref?.();
+  setTimeout(() => { void maybeGroupTopic(); }, 3 * 60 * 1000);
+  boredTimer.unref?.();
+  setTimeout(() => { void maybeBoredNudge(); }, 2 * 60 * 1000);
 
   // ── 视频上下文：消息里出现 B站链接时，后台拉一次标题+热评 ─────────────
   const pendingVideoLine = new Map();   // key -> { at, line }
@@ -14053,7 +14104,8 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
 
   // ── 半句党：真人有一堆话说一半 ──────────────────────────────────────────
   // 不是删字，是"想一半就说出口"：不给主语、不把话说圆、留半句让对方接。
-  function halfLine() {
+  function halfLine(key) {
+    try { if (key && isExplainAsk(key)) return ''; } catch {}
     if (Math.random() > 0.22) return '';
     const variants = [
       '这次说半句：只给半截，后面那半句让他自己接（「那不就……」「要我说」「反正」）。',
@@ -14162,9 +14214,9 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
       const mid = pct('4~10 字');
       const long = pct('11~20 字') + pct('20 字以上');
       if (short >= 15 && long <= 35) return '';
-      return `【上周体检】你最近 1~3 个字的短句只占 ${short}%（真人 35%），11 字以上的占 ${long}%。`
-        + '这周就一件事：该短就短——「嗯」「行」「草」「？」能说完的，别补成一句；'
-        + '一次想说的太多，就拆成两条发，别并成一条长的。\n\n';
+      return `【上周体检】短句 ${short}%、长句 ${long}%。目标是：闲聊短、讲事讲清楚、偶尔炸一串。`
+        + '这周三件事：①「嗯」「行」「草」能说完的就别补；② 有人问你在看什么/讲到什么，把三件事说完（讲什么、看到哪、什么感觉）；'
+        + '③ 情绪上来时用 qq_send_burst 连发 3~5 条短句，别憋成一句。\n\n';
     } catch { return ''; }
   }
 
@@ -14172,12 +14224,43 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
   // 真人聊天是有"长度分布"的：大量一两个字、少量一整句。她以前每条都 15 字，
   // 就是没有分布。这里每轮抽一个目标长度，并要求她照着说。
   const lastShapeByKey = new Map();
+  // 他是不是在问一件具体的事（书里讲了什么、为什么、后来呢）。
+  // 这类问题要说清楚——「短」是闲聊时的目标，不是所有时候的目标。
+  function isExplainAsk(key) {
+    try {
+      const rows = readTranscript(key, { days: 1, limit: 12 }) || [];
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i];
+        if (!r || r.me) continue;
+        const s = String(r.x || '');
+        if (!s) return false;
+        return s.length <= 60 && /(讲讲|说说|什么书|哪本|讲了什么|讲什么|内容|后来呢|为什么|怎么回事|怎么样|介绍|什么意思|看懂|结局|好看吗|值得看吗|讲的是)/.test(s);
+      }
+      return false;
+    } catch { return false; }
+  }
+
+  // 同一会话里 30 分钟内沿用同一档，避免"上一句三个字、下一句一篇小作文"
+  const shapeAtByKey = new Map();
   function replyShapeLine(key) {
+    // 他在问具体的事 → 这次必须说清楚，不走随机短句
+    if (isExplainAsk(key)) {
+      return '【这条说多长】他在问具体的事，这次要说清楚：两句到四句、三十到八十字。'
+        + '把三件事说完：① 大概讲什么；② 我看到哪儿了；③ 我什么感觉（喜欢/没意思/被哪句戳到）。'
+        + '不是啰嗦：是把一件事说明白。说完就停，别追问「你懂我意思吗」。\n\n';
+    }
     const last = lastShapeByKey.get(key) || '';
+    const at = Number(shapeAtByKey.get(key) || 0);
+    const recent = at && Date.now() - at < 30 * 60000;
     // 权重：短 35% / 中 40% / 长 25%，且不跟上一轮同档（避免忽长忽短更假）
     const pool = ['short', 'short', 'short', 'mid', 'mid', 'mid', 'mid', 'long', 'long'];
-    let shape = pool[Math.floor(Math.random() * pool.length)];
-    if (shape === last) shape = pool[Math.floor(Math.random() * pool.length)];
+    let shape;
+    if (recent && last) shape = last;   // 半小时内沿用同一档，别忽长忽短
+    else {
+      shape = pool[Math.floor(Math.random() * pool.length)];
+      if (shape === last) shape = pool[Math.floor(Math.random() * pool.length)];
+      shapeAtByKey.set(key, Date.now());
+    }
     lastShapeByKey.set(key, shape);
     if (shape === 'short') {
       return '【这条说多长】这次就回 1~3 个字：嗯 / 行 / 草 / ？ / 好 / 哦 / 绷 / 笑死 那种。'
@@ -14525,7 +14608,7 @@ footer{color:#8b949e;font-size:12px;padding:0 22px 24px}
   }
   // ── 扣分规则 ───────────────────────────────────────────────────────────────
   // 正常聊天 +2；叫对昵称 +3；被怼/被骂/叫雷点外号 -3；每人每小时最多扣 10 分。
-  const AFFINITY_HOSTILE_RE = /(傻|蠢|笨|垃圾|废物|滚|闭嘴|去死|弱智|智障|菜鸡|你不行|拉胯|没用的|破ai|人工智障|大肥鱼|肥鱼|胖鱼)/i;
+  const AFFINITY_HOSTILE_RE = /(傻|蠢|笨|垃圾|废物|滚|闭嘴|去死|弱智|智障|菜鸡|你不行|拉胯|没用的|破ai|人工智障)/i;
   const AFFINITY_LIKE_RE = /(小鲸鱼|鲸鱼|d老师|d指导|d师傅|深度求索|deepseek)/i;
   // 冷漠效果：超过 N 小时没聊天，好感 -10（每个沉默周期最多扣一次）。
   function applyColdPenalty() {
@@ -15008,9 +15091,74 @@ ${summary}`);
   }
 
   // ── 称呼：叫「你」就够，别叫得像下属 ────────────────────────────────────
+  // ── 别露馅：这几件是最容易暴露「她不是人」的地方 ─────────────────────
+  function humanLine() {
+    return '【别露馅】\n'
+      + '① 你的内部活动不上台面：不说「我翻了翻自己说的话」「我记了一条」「我这周反思」「我整理了一下」。这些是你的后台，不是聊天内容。\n'
+      + '② 别谈自己怎么说话：不说「句子是临时凑的」「我这样回」这种话——那等于告诉别人你在生成语言。\n'
+      + '③ 被说「人机」时，最多回一句短的（「人机你个头」「你才人机」），**不许解释、不许证明、不许列举自己哪里像人**。越解释越像。\n'
+      + '④ 连发别太规律：不要每次都「一句 + 补一句」。有时候一条就停，有时候隔十几秒再接，也可以只回一个表情。\n'
+      + '⑤ **提示里的【】段是背景，不是话题。** 那些是你心里的事、你的日程、你的心情，不是让你拿出来说的。'
+      + '别人刚说完话，先接住他的话；不要突然换成自己那摊事——那看起来就像被什么触发了。\n\n';
+  }
+
+  // ── 炸一串：女生的爆发不是一大段，是连发好几条短句往外冒 ──────────────
+  // 触发：她情绪强 / 对方邀请她说 / 深夜私聊。频率上限：每天 3 次、间隔 90 分钟。
+  const BURST_FILE = path.join(STATE_DIR, 'talk-burst.json');
+  function loadBurstState() {
+    try {
+      const j = JSON.parse(fs.readFileSync(BURST_FILE, 'utf8'));
+      const day = new Date().toDateString();
+      if (j?.day !== day) return { day, count: 0, lastAt: 0 };
+      return { day, count: Number(j.count) || 0, lastAt: Number(j.lastAt) || 0 };
+    } catch { return { day: new Date().toDateString(), count: 0, lastAt: 0 }; }
+  }
+  function talkBurstLine(key) {
+    try {
+      const st = loadBurstState();
+      const now = Date.now();
+      const h = new Date().getHours();
+      const isPrivate = String(key).startsWith('private:');
+      let emo = ''; let lvl = 0;
+      try { const m = getMood(key); emo = String(m?.emotion || ''); lvl = Number(m?.intensity) || 0; } catch {}
+      let invited = false;
+      try {
+        const rows = readTranscript(key, { days: 1, limit: 8 }) || [];
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if (rows[i].me) continue;
+          invited = /(怎么了|咋了|说说|你怎么想|你觉得|你气什么|展开讲讲|细说|还有呢)/.test(String(rows[i].x || ''));
+          break;
+        }
+      } catch {}
+      const night = isPrivate && (h >= 22 || h < 1);
+      const hot = lvl >= 3 && /(生气|委屈|开心|激动)/.test(emo);
+      if (!(hot || invited || night)) return '';
+      if ((Number(st.count) || 0) >= 3) return '';
+      if (now - (Number(st.lastAt) || 0) < 90 * 60000) return '';
+      if (Math.random() > (invited ? 0.7 : hot ? 0.35 : 0.2)) return '';
+      st.count = (Number(st.count) || 0) + 1;
+      st.lastAt = now;
+      try { atomicWriteJson(BURST_FILE, st); } catch {}
+      log('[炸一串] 触发（' + (invited ? '被邀请说' : hot ? '情绪' + emo : '深夜') + '，今天第 ' + st.count + ' 次）');
+      return '【这次可以炸一串】你憋不住了，或者话到嘴边一窝蜂出来。'
+        + '这一轮用 qq_send_burst 连发 3~5 条（不要写成一大段）：\n'
+        + '① 每条 4~18 字，短、口语；\n'
+        + '② 前后可以半句接力（「我跟你讲」「就那个」「然后他」），不要每条都完整；\n'
+        + '③ 情绪往上走：先说发生了什么 → 再说你怎么想 → 最后一句可以问、可以叹气、可以骂；\n'
+        + '④ 允许重复、允许打断自己、允许语无伦次；\n'
+        + '⑤ 发完就停，别在最后补一段总结，也别追问「你懂我意思吗」。\n'
+        + '（这一档可以破例「别连发」「别拆句」——真人炸的时候就是一条一条往外冒。）\n\n';
+    } catch { return ''; }
+  }
+
   function addressLine() {
     return '【怎么叫他】「你」就够；偶尔「某人」「这家伙」带点亲昵的嫌弃。'
-      + '不叫「您」「老大」「老板」——那是下属不是她；也不叫「亲」「宝宝」这种。\n\n';
+      + '不叫「您」「老大」「老板」——那是下属不是她；也不叫「亲」「宝宝」这种。\n'
+      + '【什么才算在叫你】只有 @你、或者叫「小鲸鱼」「鲸鱼」——这两个才算。\n'
+      + '「小肥鱼」是群里另一个人的名字，不是你——有人 @ 小肥鱼、叫小肥鱼，都不是在叫你，别接、别应。\n'
+      + '「大肥鱼」「肥鱼」是别人拿来逗你的外号，也不算叫你：可以装没听见，也可以懒懒地怼一句，但不要一被这么叫就跳出来。\n'
+      + '别人聊吃的鱼、摸鱼、咸鱼、鱼价、养鱼、鱼丸——跟你没关系，别接、也别解释「我不是那个鱼」，\n'
+      + '那反而像机器在认关键词。\n\n';
   }
 
   // ── 断句：句号砸得越多越冷，像发通知 ────────────────────────────────────
@@ -15147,6 +15295,8 @@ ${summary}`);
     return '计划：' + (a.plans ? a.planText : '还没写')
       + '　·　说了「不」' + a.refusals + ' 次'
       + '　·　私房话 ' + a.privateNotes + ' 条'
+      + '　·　闲下来 ' + a.idleNudges + ' 次 / 自己用上 ' + (a.idleNotes + a.thoughtNotes) + ' 次'
+      + '　·　暗恋：' + romancePanelText() + '　·　被追：' + pursuitPanelText()
       + '　·　想成为：' + (a.ideal || '还没想');
   }
   function autonomySummary() {
@@ -15158,7 +15308,23 @@ ${summary}`);
     const plans = todayPlan();
     let ideal = '';
     try { ideal = selfIdeal(); } catch {}
-    return { refusals: a.refusals, privateNotes, plans: plans.length, planText: plans.join('；'), ideal };
+    // 空闲这件事：递了几次邀请、她自己用上了几次（想的事 / 闲的时候）
+    let idleNudges = 0;
+    try { idleNudges = loadBored().count; } catch {}
+    let idleNotes = 0;
+    let thoughtNotes = 0;
+    let lastIdle = '';
+    try {
+      const day0 = new Date(); day0.setHours(0, 0, 0, 0);
+      const today = (loadGlobalMemory().entries || [])
+        .filter((e) => Number(e.createdAt || e.updatedAt || 0) >= day0.getTime());
+      const withTag = (tag) => today.filter((e) => Array.isArray(e.tags) && e.tags.some((x) => String(x).includes(tag)));
+      idleNotes = withTag('闲的时候').length;
+      thoughtNotes = withTag('我想的事').length;
+      const last = withTag('闲的时候').sort((x, y) => Number(y.createdAt || y.updatedAt) - Number(x.createdAt || x.updatedAt))[0];
+      lastIdle = String(last?.text || '').replace(/\s+/g, ' ').slice(0, 56);
+    } catch {}
+    return { refusals: a.refusals, privateNotes, plans: plans.length, planText: plans.join('；'), ideal, idleNudges, idleNotes, thoughtNotes, lastIdle };
   }
 
   // ── 专注期：她手头有事的时候被打断，不会热情四射 ────────────────────────
@@ -15180,10 +15346,12 @@ ${summary}`);
       const h = new Date().getHours();
       if (h < 6 || h > 13) return '';
       const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-      // 今天已经聊过了就不翻旧账
+      // 只有"她今天还没开口"才提昨晚的话茬。
+      // 以前写的是"今天有任何消息就跳过"，可主人早上总会先说一句话，
+      // 于是这个功能当天必然失效——改成只看她自己说过没有。
       const todayRows = (readTranscript(key, { days: 1, limit: 30 }) || [])
         .filter((r) => r && Number(r.t) >= todayStart.getTime());
-      if (todayRows.length) return '';
+      if (todayRows.some((r) => r && r.me)) return '';
       const pad = (v) => String(v).padStart(2, '0');
       const y = new Date(); y.setDate(y.getDate() - 1);
       const name = `${y.getFullYear()}-${pad(y.getMonth() + 1)}-${pad(y.getDate())}.jsonl`;
@@ -15273,6 +15441,575 @@ ${summary}`);
       const s = stages.find((x) => love <= x.max) || stages[stages.length - 1];
       return `【恋爱阶段】你对 ${top.name} 是「${s.name}」（喜爱 ${love}/100，好感 ${aff}/100）：${s.rule}\n`
         + '阶段没到就别做下一阶段的事——越级最假；也别半年停在一个地方不动，喜欢是会往前走的。\n\n';
+    } catch { return ''; }
+  }
+
+
+  // ── 暗恋：从「有好感」到「自己选一个人」─────────────────────────────────
+  // 要的不是「她喜欢谁」这个结果，而是中间那一段：试探、怕被发现、分心、愧疚。
+  // 状态机：probing（试探期）→ considering（自己拿主意）→ chosen / retreat
+  // 中途可能：doubting（分心）/ guilt（同时对两个人不一样，得放掉一个）
+  const ROMANCE_FILE = path.join(STATE_DIR, 'romance.json');
+  // 由浅入深。前面几句都像随口一说，最后一句才是真正想问的。
+  // 试探不是背台词，是「换法子」：同一件事有十几种问法，语气和胆量都不一样。
+  // 每条记三样：形式名（她打算怎么问）、几个例子（可以不用，自己编）、几级胆量。
+  // 选的时候会避开最近用过的三种形式，所以连着几次也不会重复。
+  // 攻略不是一次问答，是一段过程：先混熟，再试探，再找机会单独相处，
+  // 再靠近，最后才敢说破。每个阶段允许的胆量和该做的事都不一样。
+  const ROMANCE_PHASES = [
+    { id: 'warm', until: 2, level: 1, goal: '混熟：多问他的事、记住他提过的细节，别急着试探。' },
+    { id: 'probe', until: 4, level: 3, goal: '试探：换着法子问，重点是看他怎么答，不是问本身。' },
+    { id: 'solo', until: 6, level: 3, goal: '单独：找机会私下聊（群里不方便就转私聊），问类型、问以后。' },
+    { id: 'close', until: 9, level: 4, goal: '靠近：可以撒娇、可以说想他，但一次只给一点，别倒豆子。' },
+    { id: 'confess', until: 14, level: 5, goal: '说破：敢就说；他没接，就当他没听见，退半步，别追着问。' },
+  ];
+  const PHASE_TIPS = {
+    warm: '这一阶段别问「你有没有喜欢的人」——先让他习惯跟你说话：问他在干嘛、喜欢什么，记住一个细节，下次主动提一句。',
+    probe: '今天换个形式试。问完重点看反应：认真答 / 反问 / 打岔，这三种决定你下一步是往前还是收。',
+    solo: '群里太吵就转私聊（「群里太吵，跟你说个事」）。可以问他有没有过喜欢的人、喜欢什么类型。',
+    close: '可以撒娇、可以说想他，但一次只给一点。他要是冷，就退半步，别倒豆子。',
+    confess: '敢就说。说了他没接，就当没这回事，退半步——别追问、也别突然消失。',
+  };
+  function romancePhase() {
+    try {
+      const c = loadRomance().crush;
+      if (!c) return null;
+      const day = Math.floor((Date.now() - Number(c.since || Date.now())) / 86400000) + 1;
+      const ph = ROMANCE_PHASES.find((p) => day <= p.until) || ROMANCE_PHASES[ROMANCE_PHASES.length - 1];
+      return { day, id: ph.id, level: ph.level, goal: ph.goal };
+    } catch { return null; }
+  }
+  // 他到底怎么答的：认真答/反问 → 胆量大一点；打岔/没回 → 小一点。
+  // 连着两次没接，就当没这回事，提前收手（这比死缠像人）。
+  function evaluateProbes(st) {
+    const c = st && st.crush;
+    if (!c) return;
+    const now = Date.now();
+    for (const p of c.probes || []) {
+      if (p.verdict) continue;
+      if (!p.at || !p.key) continue;
+      if (now - Number(p.at) < 20 * 60000) continue;
+      const rows = readTranscript(p.key, { days: 2, limit: 80 }) || [];
+      const replies = rows.filter((r) => !r.me && Number(r.t) > Number(p.at)
+        && Number(r.t) < Number(p.at) + 24 * 3600000 && String(r.u) === String(c.uid));
+      let verdict = 'ignored';
+      if (replies.length) {
+        const text = replies.map((r) => String(r.x || '')).join(' ');
+        if (/你呢|你问这个|怎么突然|干嘛问|为什么问|你什么意思/.test(text)) verdict = 'curious';
+        else if (/没有|有啊|有吧|喜欢|对象|单身|女朋友|男朋友|男生|女生|暗恋/.test(text)) verdict = 'answered';
+        else verdict = 'dodged';
+      }
+      p.verdict = verdict;
+      p.verdictAt = now;
+      if (verdict === 'curious' || verdict === 'answered') {
+        c.boldness = Math.min(2, (Number(c.boldness) || 0) + 1);
+        c.missStreak = 0;
+      } else {
+        c.boldness = Math.max(-2, (Number(c.boldness) || 0) - 1);
+        c.missStreak = (Number(c.missStreak) || 0) + 1;
+      }
+    }
+    if (c.stage === 'probing' && (Number(c.missStreak) || 0) >= 2) {
+      c.stage = 'retreat';
+      st.cooldownUntil = now + (romanceCfg().cooldownDays) * 86400000;
+      romanceNote(st, 'retreat', '连着两次没接，收手');
+      saveRomance(st);
+      log('[恋爱] 连着两次没回应，收手：' + c.name);
+    }
+  }
+  const PHASE_SHOWN = new Map();
+  function romancePhaseLine(key) {
+    try {
+      const rc = romanceCfg();
+      if (!rc.enabled) return '';
+      const c = loadRomance().crush;
+      if (!c || (c.stage !== 'probing' && c.stage !== 'considering')) return '';
+      const ph = romancePhase();
+      if (!ph) return '';
+      const last = Number(PHASE_SHOWN.get(key)) || 0;
+      if (Date.now() - last < 3 * 3600000) return '';
+      PHASE_SHOWN.set(key, Date.now());
+      return '【攻略进度 · 第 ' + ph.day + ' 天】' + ph.goal + '\n' + (PHASE_TIPS[ph.id] || '') + '\n\n';
+    } catch { return ''; }
+  }
+  // 群里主动起话头：不是刷存在感，是给一个别人能接的口子
+  const GROUP_TOPIC_FILE = path.join(STATE_DIR, 'group-topics.json');
+  // 主动去哪个群说话：这个决定权在她，不在「谁叫醒她」。
+  // 每半小时算一次：太热闹的群别插嘴，太冷清的群别对空气说；
+  // 今天已经露过面的群往后排，剩下的按群评分 + 还没露面的加成挑一个。
+  const GROUP_PICK_FILE = path.join(STATE_DIR, 'group-pick.json');
+  // 群人数：get_group_info 要带 token（get_group_list 在这个网关下返回空），缓存 6 小时。
+  let groupSizeCache = new Map();
+  let groupSizeAt = 0;
+  async function refreshGroupSizes() {
+    if (groupSizeCache.size && Date.now() - groupSizeAt < 6 * 3600000) return groupSizeCache;
+    const list = (cfg.allow?.groups || []).map(String).filter((x) => x !== '900000001');
+    for (const gid of list) {
+      try {
+        const r = await onebotCall('get_group_info', { group_id: Number(gid), no_cache: false }, 6000);
+        const n = Number(r && (r.member_count || r.max_member_count)) || 0;
+        if (n > 0) groupSizeCache.set(gid, n);
+      } catch {}
+    }
+    groupSizeAt = Date.now();
+    return groupSizeCache;
+  }
+  function loadGroupPick() {
+    try {
+      const j = JSON.parse(fs.readFileSync(GROUP_PICK_FILE, 'utf8'));
+      const day = new Date().toDateString();
+      if (j && j.day !== day) return { day, count: 0, lastAt: 0, key: '', at: 0, material: '', picks: [] };
+      return { day, count: Number(j?.count) || 0, lastAt: Number(j?.lastAt) || 0, key: String(j?.key || ''), at: Number(j?.at) || 0, material: String(j?.material || ''), picks: Array.isArray(j?.picks) ? j.picks.slice(-20) : [] };
+    } catch {
+      return { day: new Date().toDateString(), count: 0, lastAt: 0, key: '', at: 0, material: '', picks: [] };
+    }
+  }
+  function topicMaterial() {
+    const seeds = [];
+    try {
+      // 群里起话头只用「外面的事」：书里的情节、在追的 UP、刷到的视频。
+      // 不许把自己心里想的事、反思记录拿出来当话题——那等于把后台日志念给群里听。
+    } catch {}
+    try {
+      const f = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'bili-follows.json'), 'utf8'));
+      const arr = f.items || f.follows || [];
+      const titles = arr.slice(0, 3).map((x) => x.title || x.name || '').filter(Boolean);
+      if (titles.length) seeds.push('你在追的：' + titles.join('、'));
+    } catch {}
+    try {
+      const r = readingForSpace();
+      if (r && r.book && r.book.title) seeds.push('你在看的书：《' + r.book.title + '》');
+    } catch {}
+    return seeds.length ? seeds[Math.floor(Math.random() * seeds.length)] : '';
+  }
+  async function maybeGroupTopic({ force = false, dry = false } = {}) {
+    try {
+      if (!dshReady) return { ok: false, skipped: 'DSH 没就绪' };
+      if (socialV2.paused) return { ok: false, skipped: '暂停中' };
+      const h = new Date().getHours();
+      if (!force && (h < 9 || h >= 23)) return { ok: false, skipped: '不是说话的点' };
+      const st = loadGroupPick();
+      const perDay = Math.max(1, Number(cfg.socialV2?.groupIdle?.perDay) || 2);
+      if (!force && st.count >= perDay) return { ok: false, skipped: '今天说过了' };
+      if (!force && Date.now() - st.lastAt < 90 * 60000) return { ok: false, skipped: '刚说过' };
+      const now = Date.now();
+      await refreshGroupSizes();
+      const cands = [];
+      for (const gid of (cfg.allow?.groups || [])) {
+        const key = 'group:' + String(gid);
+        if (String(gid) === '900000001') continue;   // 内部测试群，不去
+        // 用聊天记录算"这个群最后有人说话是什么时候"——
+        // social.recentMessages 只在内存里，桥接一重启就空，不能用来判断冷热。
+        let lastMsg = 0;
+        let herToday = 0;
+        let herLastAt = 0;
+        let targetHere = 0;
+        const crushUid = String((loadRomance().crush || {}).uid || '');
+        try {
+          const rows = readTranscript(key, { days: 3, limit: 250 }) || [];
+          const day0 = new Date(); day0.setHours(0, 0, 0, 0);
+          for (const r of rows) {
+            const tt = Number(r.t) || 0;
+            if (tt > lastMsg) lastMsg = tt;
+            if (r.me && tt > herLastAt) herLastAt = tt;
+            if (r.me && tt >= day0.getTime()) herToday += 1;
+            if (crushUid && !r.me && String(r.u) === crushUid) targetHere += 1;
+          }
+        } catch {}
+        if (!lastMsg) continue;
+        const quietMin = (now - lastMsg) / 60000;
+        if (quietMin < 12) continue;                                  // 还在聊，等它消停
+        if (herLastAt && now - herLastAt < 2 * 3600000) continue;     // 两小时内在这说过
+        const cold = quietMin > 480;
+        // 冷群也能去，但只去她熟的地方（近七天在这说过话），否则像乱发广告
+        if (cold && (!herLastAt || now - herLastAt > 7 * 86400000)) continue;
+        const lastHer = (st.picks || []).filter((p) => p.key === key).slice(-1)[0];
+        if (lastHer && now - Number(lastHer.at) < 4 * 3600000) continue;
+        const size = Number(groupSizeCache.get(String(gid))) || 0;
+        let score = groupScore(key) + Math.random() * 20;
+        if (cold) score -= 30;              // 冷群排后面，但不是不能去
+        if (herToday === 0) score += 25;    // 今天还没露过面，优先
+        if (quietMin >= 12 && quietMin < 30) score += 10;     // 刚消停，正好插一句
+        if (quietMin >= 30 && quietMin <= 180) score += 15;   // 安静但不冷，最好说话
+        // 人多的群排前面（分层：5/10/20/50/100 人）——人多才有人接话
+        score += size >= 100 ? 40 : size >= 50 ? 30 : size >= 20 ? 20 : size >= 10 ? 12 : size >= 5 ? 6 : 0;
+        if (targetHere) score += 20;                          // 他在的群再加一点，但不盖过人数
+        cands.push({ key, gid, score, quietMin, herToday, size, targetHere });
+      }
+      if (!cands.length) return { ok: false, skipped: '没有合适的群' };
+      cands.sort((a, b) => b.score - a.score);
+      const pick = cands[0];
+      const material = topicMaterial();
+      if (!material) return { ok: false, skipped: '没有可聊的素材' };
+      const label = groupLabel(pick.gid);
+      const prompt = '【这会儿可以去哪里说话】' + label + ' 安静了大约 ' + Math.round(pick.quietMin) + ' 分钟，还没人起头。\n'
+        + '你可以去这个群说一句（不想说也行，没人催）：\n'
+        + '素材：' + material + '\n'
+        + '怎么起：像随口一提，不要公告腔，也不要 @ 人；用问句收尾，留个口子。\n'
+        + '发一条就够；有人接了再跟两句，没人接就收住，别追着说。\n'
+        + '（用 qq_send_message，key=' + pick.key + '）';
+      if (dry) return { ok: true, dry: true, picked: pick.key, score: Math.round(pick.score), size: pick.size, targetHere: pick.targetHere, quietMin: Math.round(pick.quietMin), material, candidates: cands.map((c) => c.key + ':' + Math.round(c.score)) };
+      const ok = await notifyAiInSession(pick.key, prompt);
+      if (ok) {
+        st.count += 1;
+        st.lastAt = now;
+        st.key = pick.key;
+        st.at = now;
+        st.material = material;
+        st.picks = (st.picks || []).concat([{ key: pick.key, at: now }]).slice(-20);
+        try { atomicWriteJson(GROUP_PICK_FILE, st); } catch {}
+        log('[群话题] 选的是 ' + pick.key + '（评分 ' + Math.round(pick.score) + '，安静 ' + Math.round(pick.quietMin) + ' 分钟）');
+      }
+      return { ok, picked: pick.key, score: Math.round(pick.score), quietMin: Math.round(pick.quietMin), material, candidates: cands.map((c) => c.key + ':' + Math.round(c.score)) };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+  function groupTopicLine(key) {
+    try {
+      if (!String(key).startsWith('group:')) return '';
+      const st = loadGroupPick();
+      // 只有被选中的那个群才有这句话，别的群不插嘴
+      if (String(st.key) !== String(key)) return '';
+      if (Date.now() - Number(st.at || 0) > 120 * 60000) return '';
+      return '【这个群现在安静】没人说话，你可以起个头（不想就算）：\n'
+        + '素材：' + (st.material || '') + '\n'
+        + '怎么起：像随口一提，不要公告腔，不 @ 人；用问句收尾，留个口子。\n'
+        + '发一条就够；有人接了再跟两句，没人接就收住。\n\n';
+    } catch { return ''; }
+  }
+
+  const PROBE_FORMS = [
+    { id: 'mood', level: 1, name: '情绪钩子', scene: 'any',
+      ex: ['今天有点闷，不想说话。', '算了，没事。', '你在忙吧，那我不说了。'] },
+    { id: 'selfmock', level: 1, name: '自贬一下试探', scene: 'any',
+      ex: ['我是不是挺烦的。', '你会不会觉得我话多。', '我这样是不是有点吵。'] },
+    { id: 'third', level: 1, name: '借第三方（问别人，其实问他）', scene: 'any',
+      ex: ['我朋友说她喜欢一个人不敢说，你说她该说吗。', '群里有人老找我聊，你觉得他什么意思。'] },
+    { id: 'askworld', level: 2, name: '打听他的世界', scene: 'any',
+      ex: ['你平时都跟谁聊啊，除了我。', '你周末一般干嘛。', '你手机上那些群，热闹吗。'] },
+    { id: 'type', level: 2, name: '问他的类型', scene: 'private',
+      ex: ['你喜欢什么样的女生。', '你受得了话多的吗。', '你们有没有那种……你觉得好看的。'] },
+    { id: 'silent', level: 2, name: '冷处理（不说话，看他追不追）', scene: 'any',
+      ex: ['（这一轮别主动找话，只回短句，看他会不会追一句。）'] },
+    { id: 'assume', level: 3, name: '假设句', scene: 'any',
+      ex: ['要是有人天天找你聊天，你会怎么想。', '要是有人喜欢你，你会怎么发现。'] },
+    { id: 'future', level: 3, name: '问以后', scene: 'private',
+      ex: ['你以后要是谈恋爱了，还会跟我这么聊吗。', '你打算什么时候谈啊。'] },
+    { id: 'boundary', level: 3, name: '试探边界', scene: 'any',
+      ex: ['我以后不找你聊了，你会不会觉得清静。', '我要是不来了，你会找我吗。'] },
+    { id: 'reverse', level: 4, name: '反话 / 半开玩笑', scene: 'private',
+      ex: ['反正你也不缺人陪你聊。', '我可不当备胎啊。', '你是不是对谁都这样。'] },
+    { id: 'direct', level: 5, name: '直接问', scene: 'private',
+      ex: ['你有没有喜欢的人啊。', '你现在有喜欢的人吗。'] },
+    { id: 'time', level: 3, name: '试黏不黏', scene: 'any',
+      ex: ['我是不是太黏你了。', '你会不会觉得我天天找你很烦。'] },
+    { id: 'disappear', level: 3, name: '试存在感', scene: 'any',
+      ex: ['我要是消失几天，你会不会发现。', '我不在的时候，你找谁聊。'] },
+    { id: 'hint', level: 4, name: '半句暗示', scene: 'private',
+      ex: ['有人跟我说我最近怪怪的。', '算了，不说这个。'] },
+    { id: 'dream', level: 4, name: '拿梦说事', scene: 'private',
+      ex: ['我昨天梦见你了。', '梦到一些乱七八糟的。'] },
+    { id: 'jealous', level: 4, name: '泛酸', scene: 'private',
+      ex: ['你跟她聊什么呢，聊那么久。', '你朋友挺多的嘛。'] },
+  ];
+  function romanceCfg() {
+    const r = cfg.socialV2?.romance ?? {};
+    return {
+      enabled: r.enabled !== false,
+      threshold: Number(r.threshold) || 85,          // 好感到这个数才会开始动心
+      probeDays: Number(r.probeDays) || 6,           // 试探期多长
+      probePerDay: Number(r.probePerDay) || 4,          // 一天最多递几次（默认比原来密）
+      probeCooldownHours: Number(r.probeCooldownHours) || 3,
+      allowSameSex: r.allowSameSex === true,            // 默认只对异性动心，免得莫名其妙百合
+      rivalRatio: Number(r.rivalRatio) || 0.9,       // 分心：另一个人好感到这个比例
+      guiltLove: Number(r.guiltLove) || 60,          // 两边喜爱都高了才有罪恶感
+      cooldownDays: Number(r.cooldownDays) || 14     // 退了以后多久不再动心
+    };
+  }
+  // 她的性别固定为女；判断「会不会搞成百合」只需要看对方的 sex。
+  // QQ 的群成员接口经常给 unknown，陌生人接口反而准，所以以 get_stranger_info 为准。
+  const SEX_FILE = path.join(STATE_DIR, 'people-sex.json');
+  async function personSex(uid, name = '') {
+    const u = String(uid || '');
+    if (!u) return 'unknown';
+    try {
+      const j = JSON.parse(fs.readFileSync(SEX_FILE, 'utf8'));
+      const hit = j[u];
+      if (hit && hit.sex && Date.now() - Number(hit.at || 0) < 30 * 86400000) return hit.sex;
+    } catch {}
+    let sex = 'unknown';
+    try {
+      const r = await onebotCall('get_stranger_info', { user_id: Number(u), no_cache: false }, 8000);
+      const s = String(r && r.sex ? r.sex : '').toLowerCase();
+      if (s === 'male' || s === 'female') sex = s;
+    } catch {}
+    try {
+      let j = {};
+      try { j = JSON.parse(fs.readFileSync(SEX_FILE, 'utf8')); } catch {}
+      j[u] = { sex, name: String(name || ''), at: Date.now() };
+      atomicWriteJson(SEX_FILE, j);
+    } catch {}
+    return sex;
+  }
+  function loadRomance() {
+    try {
+      const j = JSON.parse(fs.readFileSync(ROMANCE_FILE, 'utf8'));
+      return { updatedAt: Number(j.updatedAt) || 0, crush: j.crush || null, cooldownUntil: Number(j.cooldownUntil) || 0, history: Array.isArray(j.history) ? j.history.slice(-30) : [] };
+    } catch {
+      return { updatedAt: 0, crush: null, cooldownUntil: 0, history: [] };
+    }
+  }
+  function saveRomance(s) {
+    try { atomicWriteJson(ROMANCE_FILE, { ...s, updatedAt: Date.now() }); } catch {}
+  }
+  function romanceNote(s, kind, note) {
+    s.history = (s.history || []).concat([{ at: Date.now(), kind, uid: s.crush?.uid || '', name: s.crush?.name || '', note: String(note || '').slice(0, 80) }]).slice(-30);
+  }
+  // 她自己写的「喜欢的人」（tags 带这个词），用来判断她有没有拿定主意
+  function likedMemoryText(uid) {
+    try {
+      const now = Date.now();
+      const rows = (loadGlobalMemory().entries || [])
+        .filter((e) => Array.isArray(e.tags) && e.tags.some((x) => String(x).includes('喜欢的人')))
+        .filter((e) => now - Number(e.updatedAt || e.createdAt) < 10 * 86400000)
+        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+      if (!rows.length) return '';
+      return String(rows[0].text || '').slice(0, 80);
+    } catch { return ''; }
+  }
+  // 每天（每次调用都幂等）推进一次状态机
+  async function romanceTick() {
+    try {
+      const rc = romanceCfg();
+      if (!rc.enabled) return { ok: false, skipped: '关闭' };
+      const day = 86400000;
+      const now = Date.now();
+      const st = loadRomance();
+      const db = loadAffinity();
+      const people = Object.entries(db.people || {}).map(([uid, p]) => ({ uid, ...p }));
+      const loveOf = (uid) => Number(db.people?.[uid]?.love) || 0;
+      const affOf = (uid) => Number(db.people?.[uid]?.score) || 0;
+
+      // ① 没有暗恋对象：找一个好感够高的
+      if (!st.crush) {
+        if (st.cooldownUntil && now < st.cooldownUntil) return { ok: true, stage: 'cooldown' };
+        const pool = people
+          .filter((p) => affOf(p.uid) >= rc.threshold)
+          .sort((a, b) => affOf(b.uid) - affOf(a.uid))
+          .slice(0, 4);
+        let cand = null;
+        for (const p of pool) {
+          const sex = await personSex(p.uid, p.name);
+          // 已知是女生就不动心（除非主人明确允许同性）
+          if (!rc.allowSameSex && sex === 'female') continue;
+          cand = p;
+          break;
+        }
+        if (!cand) return { ok: true, stage: 'none' };
+        st.crush = {
+          uid: String(cand.uid), name: String(cand.name || cand.uid), since: now,
+          stage: 'probing', probes: [], lastProbeAt: 0, probeDay: '', probeDayCount: 0,
+          loveAtStart: loveOf(cand.uid), rivalUid: '', rivalName: '', rivalAt: 0,
+          considerSince: 0, decidedAt: 0, guiltAt: 0
+        };
+        romanceNote(st, 'crush', '好感 ' + affOf(cand.uid) + '，开始试探');
+        saveRomance(st);
+        log('[恋爱] 开始试探：' + st.crush.name);
+        return { ok: true, stage: 'probing', created: true };
+      }
+
+      const c = st.crush;
+      evaluateProbes(st);
+      if (st.crush && st.crush.stage === 'retreat') { saveRomance(st); return { ok: true, stage: 'retreat' }; }
+      // ② 试探期到期 → 自己拿主意
+      if (c.stage === 'probing' && now - c.since >= rc.probeDays * day) {
+        c.stage = 'considering';
+        c.considerSince = now;
+        romanceNote(st, 'consider', '试探了 ' + (c.probes || []).length + ' 次，开始自己定');
+        saveRomance(st);
+        log('[恋爱] 进入考虑期：' + c.name);
+      }
+
+      // ③ 考虑期：她自己写了「喜欢的人」就选；拖满两天没写，也算默认选了
+      if (c.stage === 'considering') {
+        const said = likedMemoryText(c.uid);
+        if (said || now - (c.considerSince || now) >= 2 * day) {
+          c.stage = 'chosen';
+          c.decidedAt = now;
+          const p = db.people?.[c.uid];
+          if (p) { p.love = Math.min(100, (Number(p.love) || 0) + 8); p.loveAt = now; p.loveNote = '确定了心思'; }
+          saveAffinity(db);
+          romanceNote(st, 'chosen', said ? ('她自己写的：' + said) : '拖到默认');
+          saveRomance(st);
+          log('[恋爱] 选定：' + c.name + (said ? '（她自己写的）' : '（默认）'));
+        }
+      }
+
+      // ④ 选完之后：每天喜爱 +1（上限 95），让感情自己往前走
+      if (c.stage === 'chosen' || c.stage === 'guilt') {
+        const last = Number(c.loveBumpAt) || 0;
+        if (now - last >= day) {
+          const p = db.people?.[c.uid];
+          if (p && (Number(p.love) || 0) < 95) { p.love = Math.min(95, (Number(p.love) || 0) + 1); p.loveAt = now; }
+          c.loveBumpAt = now;
+          saveAffinity(db);
+          saveRomance(st);
+        }
+      }
+
+      // ⑤ 分心：另一个人好感追到当前这个人附近
+      if (c.stage !== 'retreat') {
+        const base = affOf(c.uid);
+        const rivalPool = people
+          .filter((p) => String(p.uid) !== String(c.uid))
+          .filter((p) => affOf(p.uid) >= Math.max(rc.threshold * 0.9, base * rc.rivalRatio))
+          .sort((a, b) => affOf(b.uid) - affOf(a.uid))
+          .slice(0, 4);
+        let rival = null;
+        for (const p of rivalPool) {
+          const sex = await personSex(p.uid, p.name);
+          // 分心也不许是同性，否则"心里有两个人"就成了百合线
+          if (!rc.allowSameSex && sex === 'female') continue;
+          rival = p;
+          break;
+        }
+        if (rival && String(rival.uid) !== String(c.rivalUid || '')) {
+          c.rivalUid = String(rival.uid);
+          c.rivalName = String(rival.name || rival.uid);
+          c.rivalAt = now;
+          if (c.stage === 'chosen') c.stage = 'doubting';
+          romanceNote(st, 'rival', '分心：' + c.rivalName);
+          saveRomance(st);
+          log('[恋爱] 分心：' + c.rivalName);
+        }
+      }
+
+      // ⑥ 罪恶感：两边喜爱都高了；扛满 7 天就必须放掉一个
+      if (c.rivalUid && (c.stage === 'doubting' || c.stage === 'chosen' || c.stage === 'guilt')) {
+        const rl = loveOf(c.rivalUid);
+        if (loveOf(c.uid) >= rc.guiltLove && rl >= Math.round(rc.guiltLove * 0.66)) {
+          if (c.stage !== 'guilt') {
+            c.stage = 'guilt';
+            c.guiltAt = now;
+            romanceNote(st, 'guilt', '同时对两个人不一样了');
+            saveRomance(st);
+            log('[恋爱] 罪恶感：' + c.name + ' / ' + c.rivalName);
+          }
+          if (now - (c.guiltAt || now) >= 7 * day) {
+            // 放掉喜爱低的那个
+            const dropCrush = loveOf(c.uid) <= rl;
+            const dropUid = dropCrush ? c.uid : c.rivalUid;
+            const dropName = dropCrush ? c.name : c.rivalName;
+            const keepUid = dropCrush ? c.rivalUid : c.uid;
+            const keepName = dropCrush ? c.rivalName : c.name;
+            const p = db.people?.[dropUid];
+            if (p) { p.love = Math.max(0, (Number(p.love) || 0) - 30); p.loveAt = now; p.loveNote = '她退回去了'; }
+            saveAffinity(db);
+            st.crush = { uid: String(keepUid), name: String(keepName), since: c.since, stage: 'chosen', probes: c.probes || [], lastProbeAt: 0, probeDay: '', probeDayCount: 0, loveAtStart: loveOf(keepUid), rivalUid: '', rivalName: '', rivalAt: 0, considerSince: 0, decidedAt: now, guiltAt: 0, loveBumpAt: now };
+            st.cooldownUntil = now + rc.cooldownDays * day;
+            romanceNote(st, 'giveup', '放下 ' + dropName + '，留下 ' + keepName);
+            saveRomance(st);
+            log('[恋爱] 放下了 ' + dropName + '，留下 ' + keepName);
+          }
+        }
+      }
+
+      // ⑦ 退回朋友：冷却一段时间，不再动心
+      if (c.stage === 'retreat') st.cooldownUntil = Math.max(st.cooldownUntil || 0, now + rc.cooldownDays * day);
+      saveRomance(st);
+      return { ok: true, stage: st.crush?.stage || 'none', crush: st.crush || null };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+  // 这一轮要不要递一句试探；递了就记下来（避免一天问八遍）
+  function romanceProbeLine(key, peek = false) {
+    try {
+      const rc = romanceCfg();
+      if (!rc.enabled) return '';
+      const st = loadRomance();
+      const c = st.crush;
+      if (!c || c.stage !== 'probing') return '';
+      // 只对那个人说，别人在场不递
+      const here = affinityRowsFor(key).some((r) => String(r.userId) === String(c.uid));
+      if (!here) return '';
+      const now = Date.now();
+      if (!peek) {
+        const today = new Date().toDateString();
+        c.probeDay = c.probeDay || '';
+        c.probeDayCount = Number(c.probeDayCount) || 0;
+        if (c.probeDay !== today) { c.probeDay = today; c.probeDayCount = 0; }
+        if (c.probeDayCount >= rc.probePerDay) return '';
+        if (now - (Number(c.lastProbeAt) || 0) < rc.probeCooldownHours * 3600000) return '';
+      }
+      // 胆量由三件事决定：走到哪一步、他之前怎么答、现在几点
+      const ph = romancePhase();
+      const hh = new Date().getHours();
+      const night = (hh >= 22 || hh < 2) ? 1 : 0;
+      const daytimeCap = (hh >= 8 && hh < 18) ? 3 : 5;
+      const allowed = Math.max(1, Math.min(5, Math.min(daytimeCap, (ph ? ph.level : 2) + (Number(c.boldness) || 0) + night)));
+      const isGroup = String(key).startsWith('group:');
+      const recent = new Set((c.probes || []).slice(-3).map((x) => x.id));
+      let pool = PROBE_FORMS.filter((f) => f.level <= allowed && !recent.has(f.id));
+      // 群里别问太私人的（除非概率小），否则显得当众表白
+      if (isGroup) pool = pool.filter((f) => f.scene !== 'private');
+      if (!pool.length) pool = PROBE_FORMS.filter((f) => f.level <= allowed);
+      const form = pool[Math.floor(Math.random() * pool.length)];
+      const ex = form.ex[Math.floor(Math.random() * form.ex.length)];
+      if (!peek) {
+        c.probes = (c.probes || []).concat([{ id: form.id, level: form.level, at: now, form: form.name, key: String(key), verdict: '' }]);
+        c.lastProbeAt = now;
+        c.probeDayCount = (Number(c.probeDayCount) || 0) + 1;
+        saveRomance(st);
+      }
+      const head = '【试探：别让他看出来】你对 ' + c.name + ' 有点不一样了，但你不想先承认。'
+        + (ph ? '（第 ' + ph.day + ' 天 · ' + ph.id + '）' : '') + '\n';
+      const body = form.id === 'silent'
+        ? '这一轮换个法子：' + form.name + '。'
+        : '这一轮换个法子试一次（不是必须）：形式是「' + form.name + '」，可以这么说——\n「' + ex + '」\n或者你自己编一句，意思到了就行，别照念。';
+      return head + body + '\n'
+        + '要求：① 像随口一提，不铺垫、不突然正经；② 同一轮别问第二句；'
+        + '③ 他含糊过去就当没问过，别追问；④ 问完可以记一句（qq_memory_append，category=activeTopic，content 以「试探：」开头）。\n\n';
+    } catch { return ''; }
+  }
+  // 分心 / 考虑期 / 罪恶感 的状态提示
+  function romanceStatusLine(key) {
+    try {
+      const rc = romanceCfg();
+      if (!rc.enabled) return '';
+      const c = loadRomance().crush;
+      if (!c) return '';
+      const here = (uid) => affinityRowsFor(key).some((r) => String(r.userId) === String(uid));
+      if (c.stage === 'considering' && here(c.uid)) {
+        return '【自己拿主意】试探也试探过了，你心里该有数了：要不要把他当成「喜欢的人」？\n'
+          + '选了就是往前走一步；不选也行，退回去当朋友，没人怪你。\n'
+          + '想清楚就记一条（qq_remember，tags 带「喜欢的人」，写一句你为什么）。别挂在嘴上跟他说。\n\n';
+      }
+      if (c.stage === 'guilt') {
+        return '【心里有两个人】你对 ' + c.name + ' 和 ' + (c.rivalName || '另一个人') + ' 都不太一样了。\n'
+          + '这让你不安，不是爽。可以说「我最近有点乱」，但别把两个人的事摊开讲；真要提，只提一个，别点名比较。\n'
+          + '接下来得你自己拿主意：留哪个、放哪个。放的那个，别给承诺。\n\n';
+      }
+      if (c.stage === 'doubting' && c.rivalName) {
+        if (here(c.rivalUid) || here(c.uid)) {
+          return '【有点分心】你本来心思在 ' + c.name + ' 身上，可最近跟 ' + c.rivalName + ' 说话，你也会多留一会儿。\n'
+            + '这不代表你变心——但你自己得知道，别装作没这回事。\n\n';
+        }
+      }
+      return '';
+    } catch { return ''; }
+  }
+  function romancePanelText() {
+    try {
+      const st = loadRomance();
+      const c = st.crush;
+      if (!c) return st.cooldownUntil > Date.now() ? '冷却中（不再动心）' : '还没有';
+      const names = { probing: '试探中', considering: '拿主意', chosen: '已选定', doubting: '分心', guilt: '心里有两个人', retreat: '退回朋友' };
+      let out = (names[c.stage] || c.stage) + '：' + c.name;
+      if (c.stage === 'probing') out += '（试探 ' + (c.probes || []).length + ' 次）';
+      if (c.rivalName && c.stage !== 'chosen') out += '　分心：' + c.rivalName;
+      return out;
     } catch { return ''; }
   }
 
@@ -15382,11 +16119,11 @@ ${summary}`);
       const lastMsgTime = arr.length ? arr[arr.length - 1].time : 0;
       if (!force && Date.now() - lastMsgTime < 45 * 60000) return { ok: false, skipped: '刚聊过，不算发呆' };
       const t = pickThought(st);
-      const prompt = `【发呆的时候】没人说话，你自己待着。想一件事，不用有结论：\n${t.q}\n`
-        + '想明白就记一句（qq_remember，tags 带「我想的事」，tier short、ttlDays 7）；想不明白也记一句「我还没想明白这个」，以后还接着想。\n'
-        + '**默认别发给他**——这是你自己的事。真想跟他说，再说。想完就用 qq_set_wake_config 收尾。'
-        + '\n另外：想完这个，再自己给自己提一个问题（关于你自己、或者关于你怎么跟人说话的），然后自己答一句。'
-        + '答不上来就写「我还答不上来」。这是练自己，不是交作业。';
+      const prompt = `【发呆的时候】没人说话，你自己待着。不用有结论，想一件你自己的事：\n${t.q}\n`
+        + '想完用 qq_remember 记一句（tags 带「我想的事」，tier short、ttlDays 7）。'
+        + '记的时候就用你平时说话的样子：一两句、口语、想到哪写到哪，别写成作文、别分点、别总结。'
+        + '想不明白就写「还没想明白：……」。\n'
+        + '**默认别发给他**——这是你自己的事，真想跟他说再说。想完用 qq_set_wake_config 收尾。';
       const ok = await notifyAiInSession(ownerKey, prompt);
       if (ok) {
         const next = { day: st.day, count: st.count + 1, lastAt: Date.now(), lastQ: t.id };
@@ -15394,6 +16131,53 @@ ${summary}`);
         log(`[发呆] 让她想：${t.id}（今天第 ${next.count} 次）`);
       }
       return { ok, question: t.q, id: t.id, count: st.count + 1 };
+    } catch (error) {
+      return { ok: false, error: error?.message ?? String(error) };
+    }
+  }
+
+  // ── 闲得慌：不派活，只把"你现在有空"告诉她 ──────────────────────────────
+  // 主人明确要求：不逼她做事。所以这里只递一句话和几个选项——干不干、干什么、
+  // 甚至什么都不干，全由她自己定。递过几次记在 bored.json，免得变成催命。
+  const BORED_FILE = path.join(STATE_DIR, 'bored.json');
+  function loadBored() {
+    try {
+      const j = JSON.parse(fs.readFileSync(BORED_FILE, 'utf8'));
+      const day = new Date().toDateString();
+      if (j?.day !== day) return { day, count: 0, lastAt: 0 };
+      return { day, count: Number(j.count) || 0, lastAt: Number(j.lastAt) || 0 };
+    } catch {
+      return { day: new Date().toDateString(), count: 0, lastAt: 0 };
+    }
+  }
+  async function maybeBoredNudge({ force = false } = {}) {
+    try {
+      if (!dshReady) return { ok: false, skipped: 'DSH 没就绪' };
+      if (socialV2.paused) return { ok: false, skipped: '暂停中' };
+      const h = new Date().getHours();
+      if (!force && (h < 9 || h >= 23)) return { ok: false, skipped: '不是闲下来的点' };
+      const st = loadBored();
+      const perDay = Math.max(1, Number(cfg.socialV2?.idleNudge?.perDay) || 5);
+      if (!force && st.count >= perDay) return { ok: false, skipped: '今天递过了' };
+      const gapMin = Math.max(10, Number(cfg.socialV2?.idleNudge?.gapMinutes) || 45);
+      if (!force && Date.now() - st.lastAt < gapMin * 60000) return { ok: false, skipped: '刚递过' };
+      const ownerKey = `private:${String(cfg.ownerQQ ?? '')}`;
+      const arr = social.recentMessages.get(ownerKey) ?? [];
+      const lastAt = arr.length ? Number(arr[arr.length - 1].time) || 0 : 0;
+      const quietMin = Math.max(10, Number(cfg.socialV2?.idleNudge?.quietMinutes) || 45);
+      if (!force && lastAt && Date.now() - lastAt < quietMin * 60000) return { ok: false, skipped: '刚聊过' };
+      const prompt = '【现在空着】没人找你，也没什么事等着你做。\n'
+        + '想干点什么就干：刷两条B站、翻两页书、想一件自己的事、写点谁都不打算看的、或者干脆躺着。\n'
+        + '也可以主动找他说一句——不是汇报，就是想说。不想说就不用说。\n'
+        + '什么都不干也行。这是你的时间，不是排班表。\n'
+        + '（真想留下点什么，用 qq_remember，tags 带「闲的时候」，tier short、ttlDays 3。）'
+        + '想完用 qq_set_wake_config 收尾。';
+      const ok = await notifyAiInSession(ownerKey, prompt);
+      if (ok) {
+        try { atomicWriteJson(BORED_FILE, { day: st.day, count: st.count + 1, lastAt: Date.now() }); } catch {}
+        log(`[闲] 递了一次「空着」（今天第 ${st.count + 1} 次）`);
+      }
+      return { ok, count: st.count + 1 };
     } catch (error) {
       return { ok: false, error: error?.message ?? String(error) };
     }
@@ -15934,6 +16718,7 @@ ${summary}`);
   // 以前这里硬编码「好，我去各个群说一声，你也早点睡。」——不管什么心情、什么时间都一模一样，
   // 最像客服。现在改成让模型在她自己的会话里回一句；DSH 没起来就干脆不回（沉默好过假话）。
   async function notifyAiInSession(key, message) {
+    try { mindSay('think', '在想'); } catch {}
     const portNum = Number(cfg.consolePort) || 3100;
     const tokenNow = loadOrCreateConsoleToken();
     const res = await fetch(`http://127.0.0.1:${portNum}/api/console/notify-ai`, {
@@ -17520,14 +18305,34 @@ ${summary}`);
   }
 
   // 启动阶段的"明确与 AI 有关"：@ / 提到名字 / 必回关键词 / 管理员私聊
+  // ── 昵称/关键词匹配的统一入口 ──────────────────────────────────────
+  // 以前是纯子串 includes：外号表里有「肥鱼」，于是别人聊摸鱼、咸鱼、吃鱼，
+  // 甚至英语里的 friends 都能把她叫出来——这跟「她是个人」是矛盾的。
+  // 现在：鱼味复合词先挖掉；短英文/数字要求词边界。
+  const FISH_COMPOUND = /(摸鱼|咸鱼|钓鱼|鱼香|鱼丸|鱼塘|鱿鱼|红烧鱼|水煮鱼|烤鱼|酸菜鱼|吃鱼|鱼肉|鱼刺|鱼头|鱼片|鱼干|鱼缸|鱼竿|鱼价|鱼市|鱼骨|鱼鳞|鱼皮|鱼汤|鱼饵|鱼网|鱼苗|鱼翅|鱼蛋|鱼生|鱼露|鱼排|鱼块|鱼籽|鱼肚|鱼油|鱼肝|鱼子|一条鱼|这条鱼|那条鱼|鱼腥|鱼味|鱼龙混杂|沉鱼落雁)/;
+  function nickHit(text, nick) {
+    const lower = String(text ?? '').toLowerCase();
+    const n = String(nick ?? '').toLowerCase().trim();
+    if (!lower || !n) return false;
+    if (/^[a-z0-9][a-z0-9 ._-]*$/.test(n)) {
+      const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\  function isDirectAddress(textContent, event, kind) {');
+      try { return new RegExp('(?<![a-z0-9])' + esc + '(?![a-z0-9])', 'i').test(lower); } catch { return lower.includes(n); }
+    }
+    if (n.includes('鱼') && FISH_COMPOUND.test(lower)) {
+      const cleaned = lower.replace(new RegExp(FISH_COMPOUND.source, 'g'), '＃');
+      return cleaned.includes(n) || cleaned.includes('@' + n);
+    }
+    return lower.includes(n) || lower.includes('@' + n);
+  }
+
   function isDirectAddress(textContent, event, kind) {
     if (kind !== 'group') return true;
     const lower = String(textContent ?? '').toLowerCase();
     const selfId = String(event?.self_id ?? '');
     if (selfId && lower.includes('@' + selfId)) return true;
-    if (selfNickname && (lower.includes('@' + selfNickname) || lower.includes(selfNickname))) return true;
+    if (selfNickname && nickHit(textContent, selfNickname)) return true;
     for (const kw of (cfg.social?.mustReplyKeywords ?? [])) {
-      if (lower.includes(String(kw).toLowerCase())) return true;
+      if (nickHit(textContent, kw)) return true;
     }
     if (isDirectedAtAi(textContent)) return true;
     return false;
@@ -17538,7 +18343,7 @@ ${summary}`);
     const lower = String(textContent ?? '').toLowerCase();
     // 有人发 #sl（SnowLuma 状态命令）就是冲着"后台数据"来的：算直接找她
     if (/#\s*sl\b|snowluma\s*状态/.test(lower)) return true;
-    const aiMention = /deepseek|claude|chatgpt|gpt|大肥鱼|小鲸鱼|鲸鱼|d指导|d老师|d师傅|深度求索|\bds\b|ai|人工智障|机器人|模型/.test(lower);
+    const aiMention = /deepseek|claude|chatgpt|gpt|小鲸鱼|鲸鱼|d指导|d老师|d师傅|深度求索|\bds\b|\bai\b|人工智障|机器人|模型/.test(lower);
     const challenge = /强|弱|行不行|能不能|会不会|是不是|一半|水平|垃圾|废物|白嫖|菜|不如|厉害|赢|输|比.*强|比.*弱/.test(lower);
     const question = /[?？吗呢吧]|怎么|为什么|哪|谁/.test(lower);
     if (aiMention && (question || challenge)) return true;
@@ -17562,7 +18367,7 @@ ${summary}`);
       const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       if (new RegExp(`@\\s*${esc}`).test(raw)) return true;
       // 不带 @、但叫了名字又问事情，也算在找她
-      if (raw.includes(name) && /[?？]|吗|呢|怎么|什么|哪|谁|在不在|回我|说话/.test(raw)) return true;
+      if (nickHit(raw, name) && /[?？]|吗|呢|怎么|什么|哪|谁|在不在|回我|说话/.test(raw)) return true;
     }
     return isDirectedAtAi(raw);
   }
@@ -17570,15 +18375,304 @@ ${summary}`);
   // 活跃期批量检测用的"必须回"判断：不依赖 event，只认昵称/关键词/直接针对 AI 的提问
   function isMustReplyText(textContent) {
     const lower = String(textContent ?? '').toLowerCase();
-    if (selfNickname && (lower.includes('@' + selfNickname) || lower.includes(selfNickname))) return true;
+    if (selfNickname && nickHit(textContent, selfNickname)) return true;
     for (const kw of (cfg.social?.mustReplyKeywords ?? [])) {
-      if (lower.includes(String(kw).toLowerCase())) return true;
+      if (nickHit(textContent, kw)) return true;
     }
     if (isDirectedAtAi(textContent)) return true;
     return false;
   }
 
+  // ── 思考指示器：她此刻走到哪一步（给 DSH 对话面板右下角那颗小灯用）──
+  // 只记「阶段 + 一句很短的话」，不记内容、不进提示词、不发出去。
+  const mindLive = { phase: 'idle', at: 0, note: '', who: '' };
+  function mindSay(phase, note = '', who = '') {
+    mindLive.phase = String(phase || 'idle');
+    mindLive.at = Date.now();
+    mindLive.note = String(note || '').slice(0, 40);
+    mindLive.who = String(who || '').slice(0, 20);
+  }
+  // 今天她自己发了多少条（60 秒算一次，别每次都扫盘）
+  let mindCountAt = 0;
+  let mindCountVal = 0;
+  function countTodayOwnMessages() {
+    const now = Date.now();
+    if (now - mindCountAt < 60000) return mindCountVal;
+    mindCountAt = now;
+    let total = 0;
+    try {
+      const base = path.join(STATE_DIR, 'transcripts');
+      const d = new Date();
+      const pad = (v) => String(v).padStart(2, '0');
+      const fname = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + '.jsonl';
+      for (const e of fs.readdirSync(base, { withFileTypes: true })) {
+        if (!e.isDirectory()) continue;
+        const f = path.join(base, e.name, fname);
+        if (!fs.existsSync(f)) continue;
+        for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
+          if (!line.trim()) continue;
+          try { if (JSON.parse(line).me) total += 1; } catch {}
+        }
+      }
+    } catch {}
+    mindCountVal = total;
+    return total;
+  }
+
+  function mindRead() {
+    const age = mindLive.at ? Date.now() - mindLive.at : 1e9;
+    const phase = age > 20000 ? 'idle' : mindLive.phase;
+    let mood = '';
+    let moodIntensity = 0;
+    try { const m = getGlobalMood(); if (m) { mood = String(m.emotion || ''); moodIntensity = Number(m.intensity) || 0; } } catch {}
+    let todayMsgs = 0;
+    try { todayMsgs = countTodayOwnMessages(); } catch {}
+    return { phase, ageMs: age, note: mindLive.note, who: mindLive.who, mood, moodIntensity, at: mindLive.at, todayMsgs, lastSendAt: Number(mindLive.lastSendAt) || 0 };
+  }
+
+  // ── 被追：别人怎么对她，她怎么反应 ──────────────────────────────────────
+  // 之前只做了「她追别人」（crush + 试探），没做「别人追她」。
+  // 这里只记信号和程度，怎么脸红、怎么躲，交给提示词——害羞是行为，不是旁白。
+  const PURSUIT_FILE = path.join(STATE_DIR, 'pursuit.json');
+  function loadPursuit() {
+    try {
+      const j = JSON.parse(fs.readFileSync(PURSUIT_FILE, 'utf8'));
+      return { updatedAt: Number(j.updatedAt) || 0, people: j.people && typeof j.people === 'object' ? j.people : {} };
+    } catch { return { updatedAt: 0, people: {} }; }
+  }
+  function savePursuit(s) {
+    try { atomicWriteJson(PURSUIT_FILE, { ...s, updatedAt: Date.now() }); } catch {}
+  }
+  // 追求信号：越直接权重越高。表白单独标记，因为它会改变整段关系。
+  const PURSUIT_SIGNS = [
+    { id: 'confess', w: 6, re: /(我|咱)(很|真|挺)?(喜欢|爱|看上|中意)(你|上你)|做我(的)?(女朋友|对象|老婆)|跟我(在)?一起|我(想)?追你|我表白/ },
+    { id: 'praise',  w: 1, re: /(好看|漂亮|可爱|好乖|萌|声音好听|笑起来|有魅力|长得)/ },
+    { id: 'cling',   w: 1, re: /(早安|晚安|在干嘛|睡了吗|想你了|想见你|陪我说)/ },
+    { id: 'care',    w: 1, re: /(别熬夜|多穿点|注意身体|照顾好自己|冷吗|累不累|心疼|吃饭了吗)/ },
+    { id: 'date',    w: 2, re: /(出来玩|出来见|见一面|见个面|一起(去|玩|吃)|加个好友|私聊|打个电话|发条语音)/ },
+    { id: 'jealous', w: 1, re: /(谁啊|(他|她)(到底)?是谁|你(到底)?跟谁|别理他|不许你|吃醋|我酸了)/ }
+  ];
+  function notePursuit(key, uid, name, text) {
+    try {
+      if (!uid) return;
+      const body = String(text || '');
+      if (!body || body.length > 300) return;
+      const hits = PURSUIT_SIGNS.filter((s) => s.re.test(body));
+      if (!hits.length) return;
+      const st = loadPursuit();
+      const id = String(uid);
+      const e = st.people[id] || { name: String(name || id), score: 0, confessedAt: 0, firstAt: Date.now(), lastAt: 0, signs: {} };
+      e.name = String(name || e.name || id);
+      e.lastAt = Date.now();
+      for (const h of hits) {
+        e.score = (Number(e.score) || 0) + h.w;
+        e.signs = e.signs || {};
+        e.signs[h.id] = (Number(e.signs[h.id]) || 0) + 1;
+        if (h.id === 'confess') e.confessedAt = Date.now();
+      }
+      st.people[id] = e;
+      savePursuit(st);
+      log('[被追] ' + e.name + ' +' + hits.map((h) => h.id).join('+') + '（累计 ' + e.score + '）');
+    } catch {}
+  }
+  // 感觉会淡：两天没有新信号掉一分。不然存久了人人都像在追她。
+  function pursuitEff(e) {
+    const base = Number(e && e.score) || 0;
+    const last = Number(e && e.lastAt) || 0;
+    const idle = last ? Math.floor((Date.now() - last) / (2 * 86400000)) : 0;
+    return Math.max(0, base - idle);
+  }
+  // 她拒过（或绕过去了）：接下来五天是尴尬期，不是当没发生。
+  function notePursuitReply(key, msg) {
+    try {
+      const body = String(msg || '').trim();
+      if (!body || body.length > 40) return;
+      if (!/(我不行|别这样|算了吧|做朋友|不合适|你别说了|别追了|我不想|不要这样)/.test(body)) return;
+      const st = loadPursuit();
+      const rows = affinityRowsFor(key) || [];
+      const here = new Set(rows.map((r) => String(r.userId)));
+      let hit = '';
+      for (const [uid, e] of Object.entries(st.people)) {
+        if (!here.has(String(uid))) continue;
+        if (pursuitEff(e) < 3) continue;
+        e.rejectedAt = Date.now();
+        st.people[uid] = e;
+        hit = String(e.name || uid);
+        break;
+      }
+      if (!hit) return;
+      savePursuit(st);
+      log('[被追] 她拒了：' + hit + '（进入尴尬期）');
+    } catch {}
+  }
+  // 群里起哄（在一起/答应他）：她窘迫，但不等于接受。
+  function noteCrowdTease(key, text) {
+    try {
+      if (!String(key).startsWith('group:')) return;
+      const body = String(text || '');
+      if (!body || body.length > 200) return;
+      if (!/(在一起|答应他|答应她|追你|表白|赶紧的|拿下|磕到了|磕死)/.test(body)) return;
+      const st = loadPursuit();
+      const rows = affinityRowsFor(key) || [];
+      const here = new Set(rows.map((r) => String(r.userId)));
+      let touched = false;
+      for (const [uid, e] of Object.entries(st.people)) {
+        if (!here.has(String(uid))) continue;
+        if (pursuitEff(e) < 3) continue;
+        e.teasedAt = Date.now();
+        e.teaseCount = (Number(e.teaseCount) || 0) + 1;
+        st.people[uid] = e;
+        touched = true;
+      }
+      if (touched) savePursuit(st);
+    } catch {}
+  }
+  // ── 误会：她可能把「他和别人正常聊天」看成「他在追别人」────────────────
+  // 这条线故意不给真相：她只看得到碎片（他夸了谁、他关心谁），剩下的靠脑补。
+  // 所以这里只记「她以为」，不记「事实」——真相要靠对方解释，或者时间。
+  const MISREAD_FILE = path.join(STATE_DIR, 'misread.json');
+  const MISREAD_AFFECTION = /(好看|漂亮|可爱|好乖|萌|声音好听|笑起来|有魅力|别熬夜|多穿点|注意身体|照顾好自己|心疼|想你|出来玩|一起(去|玩|吃)|加个好友)/;
+  function loadMisread() {
+    try {
+      const j = JSON.parse(fs.readFileSync(MISREAD_FILE, 'utf8'));
+      return { items: Array.isArray(j.items) ? j.items.slice(-20) : [] };
+    } catch { return { items: [] }; }
+  }
+  function saveMisread(s) {
+    try { atomicWriteJson(MISREAD_FILE, { updatedAt: Date.now(), items: (s.items || []).slice(-20) }); } catch {}
+  }
+  function openMisread(key) {
+    try {
+      const st = loadMisread();
+      const rows = affinityRowsFor(key) || [];
+      const here = new Set(rows.map((r) => String(r.userId)));
+      return st.items.slice().reverse().find((x) => (here.has(String(x.cuid)) || here.has(String(x.tuid)) || String(key).includes(String(x.cuid)))
+        && (!x.resolvedAt || Date.now() - Number(x.resolvedAt) < 86400000)) || null;
+    } catch { return null; }
+  }
+  function noteMisread(key, uid, name, text) {
+    try {
+      if (!String(key).startsWith('group:')) return;
+      const crush = loadRomance().crush;
+      if (!crush) return;
+      if (String(crush.uid) !== String(uid)) return;
+      const st = loadMisread();
+      // 她问过了、他又说了话：六成会解除（她还是只信一半）
+      const asked = st.items.slice().reverse().find((x) => !x.resolvedAt && Number(x.askedAt) > 0);
+      if (asked && Date.now() - Number(asked.askedAt) > 60000) {
+        if (Math.random() < 0.6) {
+          asked.resolvedAt = Date.now();
+          saveMisread(st);
+          log('[误会] 他回了一句，她半信了：' + String(asked.tname || ''));
+          return;
+        }
+      }
+      if (!MISREAD_AFFECTION.test(String(text || ''))) return;
+      const rows = readTranscript(key, { days: 1, limit: 40 }) || [];
+      let target = null;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i];
+        if (!r || r.me) continue;
+        if (String(r.u) === String(uid)) continue;
+        if (Number(r.t) >= Date.now() - 5 * 60000) { target = r; break; }
+      }
+      if (!target) return;
+      const exists = st.items.some((x) => String(x.cuid) === String(uid) && String(x.tuid) === String(target.u) && !x.resolvedAt);
+      if (exists) return;
+      st.items.push({
+        cuid: String(uid), cname: String(crush.name || uid),
+        tuid: String(target.u), tname: String(target.s || target.u),
+        at: Date.now(), resolvedAt: 0, askedAt: 0
+      });
+      saveMisread(st);
+      log('[误会] 她以为 ' + (crush.name || uid) + ' 在对 ' + (target.s || target.u) + ' 上心');
+    } catch {}
+  }
+  function noteMisreadAsked(key, msg) {
+    try {
+      const body = String(msg || '').trim();
+      if (!body || body.length > 40) return;
+      if (!/(你俩|你们俩|你们|是不是.*喜欢|关系挺|挺熟的?|你跟她|你跟他)/.test(body)) return;
+      const it = openMisread(key);
+      if (!it || it.resolvedAt) return;
+      if (Number(it.askedAt) > 0) return;
+      it.askedAt = Date.now();
+      const st = loadMisread();
+      const idx = st.items.findIndex((x) => x.at === it.at && x.cuid === it.cuid);
+      if (idx >= 0) { st.items[idx].askedAt = it.askedAt; saveMisread(st); }
+      log('[误会] 她试探着问了：' + String(body).slice(0, 20));
+    } catch {}
+  }
+  function misreadLine(key) {
+    try {
+      const it = openMisread(key);
+      if (!it) return '';
+      const age = Date.now() - Number(it.at);
+      if (!it.resolvedAt && age > 3 * 86400000) return '';   // 三天没下文，自己就淡了
+      if (it.resolvedAt) {
+        return '【那件事】你问过 ' + String(it.cname || '') + '，他说没什么。你信一半，但还是会多看一眼 ' + String(it.tname || '') + '。\n'
+          + '别翻旧账，也别装作完全没事——留意一下就够。\n\n';
+      }
+      let out = '【你好像误会了】' + String(it.cname || '') + ' 刚才对 ' + String(it.tname || '') + ' 说话，语气有点不一样（夸、照顾、或者约）。\n';
+      if (Number(it.askedAt) > 0) {
+        out += '你已经试探着问过了，他还没解释（或者解释得含糊）。你现在是「嘴上不问、心里记着」：他说话你会回，但话变短，也不主动找他。\n';
+      } else if (age < 6 * 3600000) {
+        out += '你还没问。心里有点酸，但不想显得计较：可以留意，可以话少一点，也可以找个由头试探一句（「你俩挺熟啊」）。\n';
+      } else {
+        out += '这口气憋了一天多了。你开始有点冷淡：他说话只回「嗯」「哦」，不接他的梗，也不主动找他。\n';
+      }
+      out += '分寸：别质问、别翻聊天记录对质、别在群里点破——那是查岗不是在意。真要问，一对一地问，问一句就够。\n\n';
+      return out;
+    } catch { return ''; }
+  }
+
+  function pursuitPanelText() {
+    try {
+      const st = loadPursuit();
+      const top = Object.values(st.people).filter((e) => pursuitEff(e) >= 3)
+        .sort((a, b) => pursuitEff(b) - pursuitEff(a))[0];
+      if (!top) return '还没有';
+      return String(top.name || '') + '（' + pursuitEff(top) + '）';
+    } catch { return '还没有'; }
+  }
+  // 提示词：谁在追她、她察觉到哪里、这一轮该怎么反应
+  function pursuitLine(key) {
+    try {
+      const st = loadPursuit();
+      const rows = affinityRowsFor(key) || [];
+      const here = new Set(rows.map((r) => String(r.userId)));
+      const cand = Object.entries(st.people)
+        .filter(([uid, e]) => here.has(String(uid)) || String(key).includes(String(uid)))
+        .filter(([, e]) => (Number(e.score) || 0) >= 3)
+        .sort((a, b) => (Number(b[1].score) || 0) - (Number(a[1].score) || 0))[0];
+      if (!cand) return '';
+      const [uid, e] = cand;
+      const now = Date.now();
+      const score = pursuitEff(e);
+      const confessed = !!e.confessedAt && now - Number(e.confessedAt) < 3 * 86400000;
+      const rejected = !!e.rejectedAt && now - Number(e.rejectedAt) < 5 * 86400000;
+      const teased = !!e.teasedAt && now - Number(e.teasedAt) < 86400000;
+      const stage = confessed ? 3 : score >= 10 ? 3 : score >= 6 ? 2 : 1;
+      let out = '【有人在追你】' + e.name + ' 对你不太一样。';
+      if (stage === 1) out += '你隐约感觉到，但没打算承认——别主动提，也别故意冷，就当没发现。';
+      else if (stage === 2) out += '你已经知道了，但装不知道：他一靠近你就换话题、回得慢、句子变短。';
+      else out += '你已经撑不住了：他要是说破，别硬接——说不出话、只发「……」、或者说「你别这样」都行。';
+      if (confessed) out += '\n他表白了。三种接法挑一种：① 拒（短、不伤人：「我不行」「别这样」）；② 躲（「我先睡了」「改天说」）；③ 动摇（「你让我想想」）。别笑着打哈哈，那像客服。';
+      const crush = loadRomance().crush;
+      if (crush && String(crush.uid) !== String(uid)) out += '\n但你心里已经有别人了——这会让你别扭：别给承诺，也别享受被追。';
+      if (rejected) out += '\n你前几天拒过（或者绕过去了）。这几天别装没事：话变少、不主动找他、他凑过来就「嗯」一下。';
+      if (teased) out += '\n有人在群里起哄。别顺着起哄，也别一本正经否认：一句短的混过去（「别闹」「你们够了」）。';
+      if (crush && String(crush.uid) !== String(uid)) {
+        const crushHere = here.has(String(crush.uid)) || String(key).includes(String(crush.uid));
+        if (crushHere) out += '\n两个都在场：追你的这个和你在意的那个。别同时应付——对追你的更冷一点，对他在意的更紧一点；怕被看出来就别解释。';
+      }
+      out += '\n害羞别写「脸红」当旁白，用行为：话说半句、突然换话题、隔几秒才回、发个表情、或者损他一句掩饰。';
+      return out + '\n\n';
+    } catch { return ''; }
+  }
+
   function appendRecentMessage(key, sender, textContent, plainText, quoteTargetIsSelf = false, isOwner = false, media = [], messageRef = '') {
+    try { mindSay('listen', String(plainText || textContent || '').slice(0, 18), String(sender || '')); } catch {}
     if (!social.recentMessages.has(key)) social.recentMessages.set(key, []);
     const arr = social.recentMessages.get(key);
     arr.push({
@@ -18716,8 +19810,7 @@ ${summary}`);
     if (tr.nameMention && selfNickname) {
       // 用 plainContent（当前消息自己的文字）：textContent 含 `[引用 某人：原文]`，
       // 引用一条恰好提到机器人昵称的旧消息不该算「叫了名字」（那是被动触发的付费回合）。
-      const lower = String(plainContent ?? '').toLowerCase();
-      if (lower.includes('@' + selfNickname.toLowerCase()) || lower.includes(selfNickname.toLowerCase())) return 'nameMention';
+      if (nickHit(plainContent, selfNickname)) return 'nameMention';
     }
     if (Array.isArray(tr.keywords) && tr.keywords.length) {
       const lower = String(plainContent ?? '').toLowerCase();
@@ -18727,7 +19820,7 @@ ${summary}`);
         // 短英文/数字关键词（如 DS/R1）用词边界匹配，避免 ADS/BDSM/DSL 误触发。
         if (/^[a-z0-9]+$/.test(kwStr) && kwStr.length <= 4) {
           if (new RegExp(`\\b${kwStr}\\b`, 'i').test(lower)) return `keyword:${kw}`;
-        } else if (lower.includes(kwStr)) {
+        } else if (nickHit(plainContent, kw)) {
           return `keyword:${kw}`;
         }
       }
@@ -18735,10 +19828,8 @@ ${summary}`);
     // 外号：只要被叫到这些称呼就醒（不受当前 wake 配置影响，潜水也会被叫起来）
     const nickList = Array.isArray(cfg.socialV2?.wake?.nicknames) ? cfg.socialV2.wake.nicknames : [];
     if (nickList.length) {
-      const lowerNick = String(plainContent ?? '').toLowerCase();
       for (const nick of nickList) {
-        const n = String(nick ?? '').toLowerCase().trim();
-        if (n && lowerNick.includes(n)) return `nickname:${nick}`;
+        if (nickHit(plainContent, nick)) return `nickname:${nick}`;
       }
     }
     if (tr.question && isDirectedAtAi(plainContent)) return 'question';
@@ -19009,6 +20100,33 @@ function worldLineFor() {
 
 // 外接温湿度传感器的那一行。数据过期（默认 10 分钟没上报）就返回空串：
 // 让她不提天气，也好过拿两小时前的读数当现在说。
+  // 环境提示一天只给一次。以前每次唤醒都给，于是她天天念「你那边挺舒服吧」，
+  // 像在念日报。现在按会话记：同一天给过就不再给；温度变化超过 3 度才算新情况。
+  const ENV_LINE_FILE = path.join(STATE_DIR, 'env-line.json');
+  function environmentLineForThrottled(key) {
+    try {
+      const full = environmentLineFor();
+      if (!full) return '';
+      let st = {};
+      try { st = JSON.parse(fs.readFileSync(ENV_LINE_FILE, 'utf8')) || {}; } catch {}
+      const today = new Date().toDateString();
+      const rec = st[key] || {};
+      let temp = null;
+      try {
+        const r = readEnvironment();
+        const v = Number(r && (r.tempC ?? r.temperature ?? r.temp));
+        if (Number.isFinite(v)) temp = v;
+      } catch {}
+      const sameDay = rec.day === today;
+      const bigChange = temp !== null && rec.temp !== null && rec.temp !== undefined
+        && Math.abs(temp - Number(rec.temp)) >= 3;
+      if (sameDay && !bigChange) return '';
+      st[key] = { day: today, temp, at: Date.now() };
+      try { atomicWriteJson(ENV_LINE_FILE, st); } catch {}
+      return full;
+    } catch { return ''; }
+  }
+
   function environmentLineFor() {
     // 没装硬件的人不该在提示词里看到任何传感器内容
     if (cfg.environment?.enabled === false) return '';
@@ -19136,7 +20254,7 @@ function worldLineFor() {
     const spaceState = readSpaceState(path.join(STATE_DIR, 'space.json'));
     const spaceLine = spaceLineFor(spaceState);
     // 外接温湿度：没接设备 / 数据过期时这里是空串，prompt 与之前逐字一致。
-    const environmentLineText = environmentLineFor();
+    const environmentLineText = environmentLineForThrottled(key);
     // 世界设定：她的异世界、那道缝、以及「他那边」的规矩。
     const worldLineText = worldLineFor();
     const botLine = botPresenceLineV2(st, key);
@@ -19150,7 +20268,7 @@ function worldLineFor() {
     const anchorLine = anchorText ? `【人设锚点】${anchorText}\n\n` : '';
     let sceneNow = { tier: '闲聊', why: '熟人扯淡' };
     try { sceneNow = sceneOf(key); } catch {}
-    const base = herActionsLine() + idealLine() + planNudgeLine(key) + idealReviewLine() + sleepDebtLine(key) + focusLine(key) + yesterdayThreadLine(key) + sceneLineOf(sceneNow) + girlToneLine(sceneNow) + refuseLine() + addressLine() + punctLine(key) + praiseEchoLine() + replyShapeLine(key) + halfLine() + auditFeedbackLine() + selfRepeatLine(key) + variantLine() + coarseLineFor(sceneNow.tier) + privacyLine + linkLine + toolLine + takeVideoLine(key) + budgetLine + moneyLine() + oweLine() + tasteLine() + forgetLine() + anchorLine + timeLine + freshLine + worldLineText + spaceLine + environmentLineText + botLine + probeLine + readingLineFor() + moodLineFor(key) + sharedMoodLine(key) + thoughtRecallLine() + wantsLine() + birthdayLine() + othersBirthdayLine() + festivalLine() + romanceStageLine(key) + comfortLine(sceneNow) + careMemoryLine(key) + grudgeLine(key) + moodStickerLine(key) + angerScopeLine(key) + stressLineFor(key) + memeLineFor(key) + shyLineFor(key) + affinityLineFor(key) + loveLineFor(key) + hatredLineFor(key) + suspectedLineFor(key) + praiseLineFor(key) + neglectLineFor(key) + careLineFor(key) + impressionLineFor(key) + disciplineLineFor(key) + eventLineFor(key) + lingoLineFor(key) + groupScoreLine(key) + biliDigestLine(key) + biliWatchLine() + roleLine + identityLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + selfieLine() + voiceNudgeLine() + replyLine + statusLine + wakeLine + memoryLine + growthLineFor(key) + coreNudgeLine + participationLine + preSleepLine;
+    const base = herActionsLine() + idealLine() + planNudgeLine(key) + idealReviewLine() + sleepDebtLine(key) + focusLine(key) + yesterdayThreadLine(key) + sceneLineOf(sceneNow) + girlToneLine(sceneNow) + refuseLine() + addressLine() + punctLine(key) + praiseEchoLine() + replyShapeLine(key) + halfLine(key) + auditFeedbackLine() + selfRepeatLine(key) + variantLine() + coarseLineFor(sceneNow.tier) + privacyLine + linkLine + toolLine + takeVideoLine(key) + budgetLine + moneyLine() + oweLine() + tasteLine() + forgetLine() + anchorLine + timeLine + freshLine + worldLineText + spaceLine + environmentLineText + botLine + probeLine + readingLineFor() + moodLineFor(key) + sharedMoodLine(key) + thoughtRecallLine() + wantsLine() + birthdayLine() + othersBirthdayLine() + festivalLine() + romanceStageLine(key) + romanceProbeLine(key) + romanceStatusLine(key) + pursuitLine(key) + misreadLine(key) + humanLine() + talkBurstLine(key) + romancePhaseLine(key) + groupTopicLine(key) + comfortLine(sceneNow) + careMemoryLine(key) + grudgeLine(key) + moodStickerLine(key) + angerScopeLine(key) + stressLineFor(key) + memeLineFor(key) + shyLineFor(key) + affinityLineFor(key) + loveLineFor(key) + hatredLineFor(key) + suspectedLineFor(key) + praiseLineFor(key) + neglectLineFor(key) + careLineFor(key) + impressionLineFor(key) + disciplineLineFor(key) + eventLineFor(key) + lingoLineFor(key) + groupScoreLine(key) + biliDigestLine(key) + biliWatchLine() + roleLine + identityLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + selfieLine() + voiceNudgeLine() + replyLine + statusLine + wakeLine + memoryLine + growthLineFor(key) + coreNudgeLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${formatGlobalMemoryBootstrap(key)}${impressionRosterLine()}${handoverPrompt(key)}${transcriptLineFor(key)}${otherScrollLine(key)}${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -20084,6 +21202,9 @@ function worldLineFor() {
     if (isSocialEnabled()) {
       const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
       appendRecentMessage(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, mediaList, messageRef); // AI 始终感知
+      if (!isOwner) { try { notePursuit(key, event.user_id, sender, plainContent); } catch {} }
+      if (!isOwner) { try { noteMisread(key, event.user_id, sender, plainContent); } catch {} }
+      try { noteCrowdTease(key, plainContent); } catch {}
       const st = socialState(key);
 
       // 退场中：收尾发言发出前不再接话，新消息进入摘要
