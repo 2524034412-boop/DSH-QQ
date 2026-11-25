@@ -1,12 +1,9 @@
-// 把 state/reflections.jsonl 汇总成一份给人看的周报。
+// 把 state/reflections.jsonl 汇总成一份给人看的周报，写到存档目录。
 // 用法：node scripts/reflect-report.mjs [天数=7] [--write]
-//   --write 时写到当前工作目录（默认只打印到 stdout）。
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = 'D:/DSH/qq-bridge';
 const FILE = path.join(ROOT, 'state', 'reflections.jsonl');
 const days = Math.max(1, Number(process.argv[2]) || 7);
 const write = process.argv.includes('--write');
@@ -38,7 +35,7 @@ lines.push('## 怎么用这份报告', '', '- 看「建议改动」类的话有�
 
 const md = lines.join('\n');
 if (write) {
-  const out = path.join(process.cwd(), `她的反思周报-${new Date().toISOString().slice(0, 10)}.md`);
+  const out = `D:/DSH/存档/她的反思周报-${new Date().toISOString().slice(0, 10)}.md`;
   fs.writeFileSync(out, md, 'utf8');
   console.log('已写入', out);
 } else {

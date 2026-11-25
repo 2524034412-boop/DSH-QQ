@@ -18,7 +18,9 @@ function esc(s) {
 
 function normalizeTier(t) {
   const v = String(t || '').toLowerCase();
-  return v === 'core' || v === 'long' || v === 'short' ? v : 'long';
+  if (v === 'core' || v === 'long' || v === 'short') return v;
+    if (v === 'knowledge') return 'long'; // 知识层先并进长期显示（星图只画三层）
+    return 'long';
 }
 
 function buildGraph(entries, cap) {

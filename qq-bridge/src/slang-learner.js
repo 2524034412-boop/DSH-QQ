@@ -239,7 +239,7 @@ export function buildSlangContext(entries, max = 8) {
     if (e.risk) line += `（注意：${clean(e.risk)}，别滥用）`;
     return line;
   });
-  return `【群聊黑话表】群里已确认/常用的网络用语和梗（按热度和新鲜度排序，知道即可，不要刻意堆砌）：\n${lines.join('\n')}`;
+  return `【群聊黑话表】群里已确认/常用的网络用语和梗（按热度和新鲜度排序）：\n${lines.join('\n')}\n用法三条：① 遇到没跟上的词就直说没跟上（「这词我不懂了」），别猜、别装懂；② 认识的词只在语境真对得上时用，一次最多一条，不要为了显摆堆砌；③ 同一个词你每见一次就重新对一遍语境，理解会越来越准。`;
 }
 
 export function buildExtractionPrompt(messages) {

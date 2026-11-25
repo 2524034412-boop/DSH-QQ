@@ -11,6 +11,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as markdown from '../src/md-to-plain.js';
 import * as sensitive from '../src/sensitive.js';
 import * as wait from '../src/v2-wait.js';
+import * as refs from '../src/qq-references.js';
+import * as followUps from '../src/qq-follow-ups.js';
+import * as conversation from '../src/qq-conversation.js';
+import * as romance from '../src/qq-romance.js';
+import * as emotions from '../src/qq-emotions.js';
+import { createSelfieStore } from '../src/selfie-store.mjs';
+import { Notifier } from '../src/notify.js';
+import { WeatherService } from '../src/weather.js';
 import * as safeFetch from '../src/safe-fetch.js';
 import * as forward from '../src/forward.js';
 import * as slang from '../src/slang-learner.js';
@@ -122,8 +130,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
-    getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
-    buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, socialV2,
+    getSocialV2State, appendSocialV2Message, recordSentMessagesV2, noteComfort,
+    buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, scheduleFollowUpV2, socialV2,
     refreshMode, modeAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
     collectors, setupSleepTimerV2,
     getInitialPrompt, setInitialPrompt, loadInitialPrompts, formatInitialPromptV2,
@@ -162,7 +170,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     NodeApiClient: class { constructor() { return api; } },
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
-    ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker,
+    ...markdown, ...sensitive, ...wait, ...refs, ...followUps, ...conversation, ...romance, ...emotions, ...safeFetch, ...forward, ...slang, ...sticker,
+    createSelfieStore, Notifier, WeatherService,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...coreMemoryHint,
     // 空间（space）是后来加的：读状态要读真实文件，测试里 STATE_DIR 是临时目录，
     // 用真实现即可（读不到就是空）；走动调度和页面渲染在测试里不该真跑。
